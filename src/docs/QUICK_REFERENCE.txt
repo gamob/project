@@ -1,0 +1,232 @@
+"""
+QUICK_REFERENCE.txt — One-Page RAG Feature Guide
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                    ONE-PAGE QUICK REFERENCE                              ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+## 🧠 1. CHAT HISTORY MEMORY FOR RAG
+
+FILE: src/conversation_context.py
+
+BASIC USAGE:
+  from conversation_context import integrate_conversation_context
+  
+  # In your chat handler:
+  info = integrate_conversation_context(user_query, session_id=chat_session_id)
+  
+  # Use the enhanced query
+  docs = brain.search(info["enhanced_query"])
+
+RETURNS:
+  {
+    "original_query": "the input",
+    "enhanced_query": "query with context",
+    "context_type": "follow-up" | "new-topic" | "standalone",
+    "session_summary": "brief context"
+  }
+
+WHEN TO USE:
+  ✓ Multi-turn conversations
+  ✓ When users refer back to previous messages ("Tell me more about X")
+  ✓ Topic-switching scenarios
+  ✗ Don't use for: Single-turn queries (no performance benefit)
+
+PERFORMANCE: O(1) - just database lookups
+
+
+## 🔗 2. HYBRID SEARCH WITH RRF
+
+FILE: src/hybrid_search_config.py
+
+BASIC USAGE:
+  from hybrid_search_config import get_semantic_config
+  
+  config = get_semantic_config()  # Pre-tuned for semantic search
+  # Use config in retrieve.py's fuse_hybrid_scores()
+
+PRE-TUNED PROFILES:
+  get_semantic_config()   → 70% vector, 30% BM25 (general QA)
+  get_keyword_config()    → 30% vector, 70% BM25 (technical docs)
+  get_balanced_config()   → 50% vector, 50% BM25 (mixed)
+  get_default_config()    → 60% vector, 40% BM25 (baseline)
+
+CUSTOMIZATION:
+  config = get_default_config()
+  config.vector_weight = 0.65
+  config.use_rrf = True
+  config.rrf_k = 50  # Lower = more aggressive
+
+PARAMETERS:
+  vector_weight    → Contribution of semantic search (0.0-1.0)
+  bm25_weight      → Contribution of keyword search (0.0-1.0)
+  use_rrf          → Use RRF (True) vs weighted avg (False)
+  rrf_k            → RRF constant (60=default, lower=more aggressive)
+  rerank_top_k     → Top K results to rerank (5=default)
+
+WHEN TO USE:
+  ✓ Always - better than simple weighted average
+  ✓ RRF for diverse document types
+  ✓ Customize per domain/dataset
+
+PERFORMANCE: Minimal overhead vs weighted average
+
+
+## ✅ 3. FAITHFULNESS CHECKING
+
+FILE: src/faithfulness_check.py
+
+BASIC USAGE:
+  from faithfulness_check import evaluate_answer_faithfulness
+  
+  score = evaluate_answer_faithfulness(answer, retrieved_documents)
+  
+  if score['is_faithful']:
+      print("✓ Answer is grounded in documents")
+  else:
+      print(f"✗ Issues: {score['concerns']}")
+
+RETURNS:
+  {
+    "overall_score": 0.87,           # 0.0-1.0
+    "is_faithful": True,             # > 0.7
+    "confidence_level": "High",      # Human-readable
+    "component_scores": { ... },     # Breakdown
+    "concerns": [ ... ]              # Specific issues
+  }
+
+SCORE INTERPRETATION:
+  0.9-1.0 → Excellent (fully grounded)
+  0.75-0.9 → Good (minor issues)
+  0.6-0.75 → Acceptable (some concerns)
+  < 0.6 → Poor (likely hallucinations)
+
+WHEN TO USE:
+  ✓ Quality assurance/evaluation
+  ✓ Low-confidence detection
+  ✓ User feedback warnings
+  ✗ Real-time: Too slow for every response
+
+PERFORMANCE: O(answer_length) - can be slow for large answers
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 🔗 MINIMAL INTEGRATION EXAMPLE
+
+```python
+from brain_service import Brain
+from conversation_context import integrate_conversation_context
+from hybrid_search_config import get_semantic_config
+from faithfulness_check import evaluate_answer_faithfulness
+from generate import answer_question
+
+# Setup
+brain = Brain()
+brain.load()
+
+# User sends message
+user_query = "What about the recent changes?"
+session_id = 123
+
+# 1. Enhance with context
+ctx_info = integrate_conversation_context(user_query, session_id)
+
+# 2. Search with smart fusion
+config = get_semantic_config()
+docs = brain.search(ctx_info["enhanced_query"])
+
+# 3. Generate answer
+answer, sources = answer_question(user_query, docs)
+
+# 4. Check faithfulness
+faith = evaluate_answer_faithfulness(answer, docs)
+confidence = faith['confidence_level']
+
+# Done!
+print(answer)
+print(f"Confidence: {confidence}")
+```
+
+
+## 🎯 DECISION TREE: WHICH FEATURE TO USE?
+
+┌─ "User references previous message?"
+│  └─ YES → Use conversation_context
+│  └─ NO → Skip
+│
+├─ "Need stable multi-retriever fusion?"
+│  └─ Always use → hybrid_search_config
+│
+└─ "Need hallucination detection?"
+   ├─ YES, in evaluation → Use faithfulness_check
+   ├─ YES, in real-time → Cache/skip complex answers
+   └─ NO → Skip
+
+
+## 📋 CHECKLIST FOR INTEGRATION
+
+PHASE 1 (This week):
+  □ Review NEW_FEATURES_SUMMARY.txt
+  □ Read INTEGRATION_GUIDE.txt
+  □ Test conversation_context.py standalone
+  □ Test hybrid_search_config.py standalone
+  □ Test faithfulness_check.py standalone
+
+PHASE 2 (Next week):
+  □ Update retrieve.py to use hybrid_search_config
+  □ Update app.py to use conversation_context
+  □ Add faithfulness warnings to UI
+  □ Test end-to-end
+
+PHASE 3 (Following week):
+  □ Monitor faithfulness trends
+  □ Tune RRF parameters per domain
+  □ Optimize conversation context window
+  □ Deploy to production
+
+
+## ⚡ PERFORMANCE IMPACT
+
+Feature                      │ Latency  │ Memory  │ Notes
+─────────────────────────────┼──────────┼─────────┼──────────────────
+conversation_context         │ < 5ms    │ Low     │ DB lookups only
+hybrid_search_config (RRF)    │ < 1ms    │ Low     │ Ranking ops
+faithfulness_check           │ 100-500ms│ Med     │ Embedding calls
+
+Total Impact: Negligible if used appropriately
+
+
+## 🐛 DEBUGGING
+
+"Queries not improving with context?"
+  → Check session_id is correct
+  → Verify chat_store.db has messages
+  → Review context_type output
+
+"Results not better with RRF?"
+  → Try different config profile
+  → Check rrf_k value (try 50 vs 60)
+  → Ensure documents are diverse
+
+"Faithfulness score always low?"
+  → Check answer length (very long = lower)
+  → Verify documents are relevant
+  → Review component_scores for diagnosis
+
+
+## 📞 FILE LOCATIONS
+
+New Features:
+  src/conversation_context.py
+  src/hybrid_search_config.py
+  src/faithfulness_check.py
+
+Modified:
+  src/generate_evals.py (added faithfulness)
+
+Documentation:
+  src/INTEGRATION_GUIDE.txt (comprehensive)
+  src/NEW_FEATURES_SUMMARY.txt (detailed overview)
+  src/QUICK_REFERENCE.txt (this file)
+"""

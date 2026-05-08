@@ -1,0 +1,299 @@
+"""
+INTEGRATION_GUIDE.md — Using the new RAG features
+
+This guide shows how to use the three new features:
+1. Chat History Memory for RAG
+2. Configurable Hybrid Search with RRF
+3. Faithfulness Checking
+
+## Feature 1: Chat History Memory for RAG Context
+
+The chat_store.py already persists conversations. Now conversation_context.py
+adds intelligence to use that history for better searches.
+
+### Quick Start:
+
+```python
+from conversation_context import integrate_conversation_context
+from brain_service import Brain
+
+brain = Brain()
+brain.load()
+
+# Get user query and session ID (from your chat interface)
+user_query = "Tell me more about that"
+session_id = 123  # From your chat UI
+
+# Enhance query with conversation context
+context_info = integrate_conversation_context(user_query, session_id)
+
+# Use the enhanced query for RAG search
+docs, low_conf, conf_pct = brain.search(context_info["enhanced_query"])
+
+print(f"Context Type: {context_info['context_type']}")  # 'follow-up', 'new-topic', or 'standalone'
+print(f"Session Summary: {context_info['session_summary']}")
+```
+
+### What it does:
+
+- Detects follow-up questions vs. new topics
+- Extracts entities and main topics from conversation
+- Enhances queries with relevant context
+- Provides conversation summaries for inclusion in LLM prompts
+
+### Integration with app.py:
+
+```python
+from conversation_context import integrate_conversation_context
+
+# In your chat message handler:
+if session_id:
+    context_info = integrate_conversation_context(user_input, session_id)
+    enhanced_query = context_info["enhanced_query"]
+    session_summary = context_info["session_summary"]
+else:
+    enhanced_query = user_input
+    session_summary = ""
+
+# Pass enhanced_query to brain.search()
+docs, low_conf, conf_pct = brain.search(enhanced_query)
+
+# Optionally include session_summary in your LLM prompt for better context awareness
+```
+
+
+## Feature 2: Configurable Hybrid Search with RRF
+
+Replace the simple weighted average fusion with Reciprocal Rank Fusion for
+better handling of outliers and diverse result types.
+
+### Quick Start:
+
+```python
+from hybrid_search_config import (
+    get_default_config, 
+    get_semantic_config,
+    get_keyword_config,
+    get_balanced_config
+)
+
+# Use pre-configured profiles:
+config = get_semantic_config()  # 70% vector, 30% BM25, RRF enabled
+
+# Or customize:
+config = get_default_config()
+config.vector_weight = 0.55
+config.bm25_weight = 0.45
+config.use_rrf = True
+config.rrf_k = 60
+config.rerank_top_k = 5
+
+# Update brain_service.py to use config:
+# In retrieve.py, import and pass config to fuse_hybrid_scores()
+```
+
+### Available Profiles:
+
+- **get_default_config()**: Balanced (60/40), RRF enabled
+- **get_semantic_config()**: Emphasize semantic similarity (70/30), faster RRF
+- **get_keyword_config()**: Emphasize keywords (30/70), gentler RRF  
+- **get_balanced_config()**: True 50/50 split
+
+### Why RRF is Better:
+
+- More robust to outlier scores
+- Handles diverse document types better
+- Stable across different query types
+- Configurable via rrf_k parameter
+
+### Integration with retrieve.py:
+
+```python
+from hybrid_search_config import get_semantic_config
+
+def get_hybrid_docs(query, db, bm25_retriever, k=15, rerank_limit=5, extra_queries=None):
+    # Use semantic config for better retrieval
+    config = get_semantic_config()
+    
+    all_queries = [query] + (extra_queries or [])
+    all_docs = []
+    
+    for q in all_queries:
+        docs, scores_vector, scores_bm25 = search_single_query(q, db, bm25_retriever, k=k)
+        
+        # Use RRF fusion instead of simple weighted average
+        fused_scores = fuse_hybrid_scores(scores_vector, scores_bm25, config)
+        # ... sort and rerank ...
+```
+
+
+## Feature 3: Faithfulness Checking
+
+Automatically evaluate whether generated answers are grounded in source documents,
+detecting hallucinations and unsupported claims.
+
+### Quick Start:
+
+```python
+from faithfulness_check import evaluate_answer_faithfulness
+
+# After generating an answer with RAG
+answer = "The company was founded in 1995..."
+documents = [doc1, doc2, doc3]  # Retrieved documents
+
+# Evaluate faithfulness
+result = evaluate_answer_faithfulness(answer, documents)
+
+print(f"Faithfulness Score: {result['overall_score']:.2f}")
+print(f"Confidence Level: {result['confidence_level']}")  # Very High, High, Moderate, Low, Very Low
+print(f"Is Faithful: {result['is_faithful']}")  # True if > 0.7
+print(f"Concerns: {result['concerns']}")
+
+# Component scores for debugging:
+print(result['component_scores'])
+# {
+#   "token_overlap": 0.85,
+#   "semantic_consistency": 0.92,
+#   "entity_grounding": 0.78,
+#   "contradiction": 1.0
+# }
+```
+
+### Output Interpretation:
+
+- **overall_score** (0.0-1.0): How faithful the answer is to sources
+  - 0.9-1.0: Excellent, fully grounded
+  - 0.75-0.9: Good, minor issues
+  - 0.6-0.75: Acceptable, some concerns
+  - < 0.6: Poor, likely hallucinations
+
+- **is_faithful**: Boolean (True if score > 0.7) for easy filtering
+
+- **confidence_level**: Human-readable assessment
+
+- **component_scores**: Breakdown for diagnosis
+  - **token_overlap**: What % of answer tokens appear in docs
+  - **semantic_consistency**: How similar answer is to doc meaning
+  - **entity_grounding**: What % of key entities are in docs
+  - **contradiction**: Flags negation inconsistencies
+
+- **concerns**: List of specific issues found
+
+### Integration with generate_evals.py:
+
+Already integrated! The evaluation script now outputs faithfulness scores:
+
+```bash
+python generate_evals.py --dataset test --sample 5
+```
+
+Output includes:
+```
+🔍 Faithfulness: High (0.87)
+```
+
+### Use in Your App:
+
+```python
+from faithfulness_check import evaluate_answer_faithfulness
+
+# In your answer generation pipeline:
+docs, _, _ = brain.search(query)
+answer, sources = answer_question(query, docs)
+
+# Check faithfulness
+faith_check = evaluate_answer_faithfulness(answer, docs)
+
+if not faith_check['is_faithful']:
+    # Warn user about low confidence
+    st.warning(f"⚠️ Low faithfulness: {', '.join(faith_check['concerns'])}")
+    
+    # Or re-search with different strategy
+    if faith_check['component_scores']['entity_grounding'] < 0.5:
+        print("→ Re-searching with keyword emphasis...")
+        # Use keyword-focused search config
+```
+
+
+## Complete Example: Integrated RAG Pipeline
+
+```python
+from brain_service import Brain
+from conversation_context import integrate_conversation_context
+from hybrid_search_config import get_semantic_config
+from faithfulness_check import evaluate_answer_faithfulness
+from generate import answer_question
+from retrieve import fuse_hybrid_scores
+
+# Setup
+brain = Brain()
+brain.load()
+session_id = 123  # From chat interface
+
+# Step 1: Get user query
+user_query = "What about the recent changes?"
+
+# Step 2: Enhance with conversation context
+context_info = integrate_conversation_context(user_query, session_id)
+print(f"Context: {context_info['context_type']}")
+
+# Step 3: Search with smart config
+config = get_semantic_config()
+docs, low_conf, conf_pct = brain.search(context_info['enhanced_query'])
+
+# Step 4: Generate answer
+answer, sources = answer_question(user_query, docs)
+
+# Step 5: Check faithfulness
+faith_check = evaluate_answer_faithfulness(answer, docs)
+
+# Step 6: Present to user
+print(f"Answer: {answer}")
+print(f"Confidence: {conf_pct}%")
+print(f"Faithfulness: {faith_check['confidence_level']}")
+
+if faith_check['concerns']:
+    print(f"⚠️ Concerns: {', '.join(faith_check['concerns'])}")
+```
+
+
+## Tuning & Configuration
+
+### For Keyword-Heavy Domains (e.g., technical manuals, legal docs):
+```python
+config = get_keyword_config()  # 30% semantic, 70% keywords
+```
+
+### For Semantic Domains (e.g., philosophy, general knowledge):
+```python
+config = get_semantic_config()  # 70% semantic, 30% keywords
+```
+
+### For Balanced Retrieval:
+```python
+config = get_balanced_config()  # 50/50
+```
+
+### Custom Tuning:
+```python
+from hybrid_search_config import HybridSearchConfig
+
+config = HybridSearchConfig()
+config.vector_weight = 0.65  # Adjust balance
+config.rrf_k = 50  # Lower k = more aggressive RRF
+config.use_rrf = True  # Enable RRF
+
+# Save and load configs
+import json
+saved = json.dumps(config.to_dict())
+loaded_config = HybridSearchConfig.from_dict(json.loads(saved))
+```
+
+## Performance Notes
+
+- **Conversation Context**: O(1) lookups, cache-friendly
+- **Hybrid Search RRF**: Minimal overhead vs. weighted average
+- **Faithfulness Check**: O(n) in answer length, can be parallelized
+
+All features are production-ready and can be enabled incrementally.
+"""

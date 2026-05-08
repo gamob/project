@@ -1,0 +1,7 @@
+{
+    "FAISS_INDEX_PATH": "faiss_index",
+    "BM25_INDEX_PATH": "bm25_index.pkl",
+    "MODEL_PATH": "model/bge-m3",
+    "RERANKER_PATH": "model/bge-reranker-v2-m3",
+    "DATA_DIR": "data"
+}

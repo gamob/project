@@ -1,0 +1,10 @@
+# Ignore the big boys
+model/
+data/
+evaluation/
+
+# Ignore Python fluff
+__pycache__/
+*.pyc
+venv/
+.env
