@@ -110,11 +110,22 @@ def build_bm25_index(chunks):
     path = get_path("BM25_INDEX_PATH", "bm25_index.pkl")
     
     try:
-        corpus_texts = [chunk.page_content for chunk in chunks]
+        corpus_texts = []
+        skipped = 0
+        for chunk in chunks:
+            text = chunk.page_content
+            if isinstance(text, str) and text.strip():
+                corpus_texts.append(text)
+            else:
+                skipped += 1
+
+        if skipped:
+            logger.warning(f"⚠️ Skipping {skipped} empty or invalid BM25 chunks")
+
         tokenized_corpus = bm25s.tokenize(corpus_texts)
-        
         retriever = bm25s.BM25()
         retriever.index(tokenized_corpus)
+        retriever.corpus = corpus_texts
         
         data_to_save = {
             "retriever": retriever,
@@ -153,10 +164,24 @@ def add_documents_incremental(vector_store, bm25_data, new_chunks):
         vector_store.add_documents(new_chunks)
         
         # Add to BM25
-        new_corpus_texts = [chunk.page_content for chunk in new_chunks]
-        new_tokenized = bm25s.tokenize(new_corpus_texts)
-        bm25_data["retriever"].index(new_tokenized)
-        bm25_data["corpus"].extend(new_corpus_texts)
+        new_corpus_texts = []
+        skipped = 0
+        for chunk in new_chunks:
+            text = chunk.page_content
+            if isinstance(text, str) and text.strip():
+                new_corpus_texts.append(text)
+            else:
+                skipped += 1
+
+        if skipped:
+            logger.warning(f"⚠️ Skipping {skipped} empty or invalid BM25 chunks during incremental update")
+
+        if new_corpus_texts:
+            new_tokenized = bm25s.tokenize(new_corpus_texts)
+            bm25_data["retriever"].index(new_tokenized)
+            bm25_data["corpus"].extend(new_corpus_texts)
+            if hasattr(bm25_data["retriever"], "corpus"):
+                bm25_data["retriever"].corpus = bm25_data["corpus"]
         
         # Save updated indices
         faiss_path = get_path("FAISS_INDEX_PATH", "faiss_index")

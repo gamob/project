@@ -5,6 +5,7 @@ import shutil
 import logging
 import time
 import pickle
+import bm25s
 from .config_service import ConfigManager
 from .index_service import IndexService
 from .retrieval_service import get_retrieval_service
@@ -136,6 +137,11 @@ class Brain:
         # Load indices through IndexService
         self.vector_store, self.bm25_data = IndexService.load_existing_indices()
         self.bm25_retriever = self.bm25_data["retriever"]
+        # Ensure BM25 retriever has corpus set and is re-indexed
+        self.bm25_retriever.corpus = self.bm25_data["corpus"]
+        if self.bm25_retriever.corpus:
+            tokenized_corpus = bm25s.tokenize(self.bm25_retriever.corpus)
+            self.bm25_retriever.index(tokenized_corpus)
 
         # Connect indices to retrieval service
         self.retrieval_service.set_indices(self.vector_store, self.bm25_retriever)
@@ -156,6 +162,8 @@ class Brain:
         # Create indices through IndexService
         self.vector_store, self.bm25_data = IndexService.create_fresh_indices(chunks)
         self.bm25_retriever = self.bm25_data["retriever"]
+        # Ensure BM25 retriever has corpus set (should already be set, but ensure)
+        self.bm25_retriever.corpus = self.bm25_data["corpus"]
 
         logger.info("✅ Brain rebuild complete!")
 
@@ -224,6 +232,8 @@ class Brain:
                 self.vector_store, self.bm25_data, new_chunks
             )
             self.bm25_retriever = self.bm25_data["retriever"]
+            # Ensure BM25 retriever has corpus set (should already be set from incremental update)
+            self.bm25_retriever.corpus = self.bm25_data["corpus"]
 
     def _save_state(self, state_dict):
         """Save the current state of file hashes to disk."""

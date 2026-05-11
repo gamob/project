@@ -32,6 +32,16 @@ from ..core.faithfulness_check import evaluate_answer_faithfulness
 
 logger = logging.getLogger(__name__)
 
+
+def configure_logging(level=logging.INFO):
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s | %(levelname)s | %(message)s',
+        handlers=[logging.StreamHandler(sys.stdout)],
+        force=True,
+    )
+    logging.getLogger().setLevel(level)
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 EVAL_DIR     = "evaluation"
 
@@ -107,7 +117,9 @@ def _answer_one(item):
     """Answer one question. Returns (idx, data) or (idx, None) on error."""
     idx, data, brain = item
     try:
+        logger.info(f"  ⏳ Starting Q{idx+1}: {data['question'][:100]}")
         docs, _, _ = brain.search(data["question"])
+        logger.info(f"  🔎 Search returned {len(docs)} docs for Q{idx+1}")
         rag_answer, sources = answer_question(data["question"], docs)
         data["rag_answer"] = rag_answer
         
@@ -346,13 +358,24 @@ def main():
         default="test",
         help="Which evaluation dataset to use (default: test)"
     )
+    configure_logging()
+
     parser.add_argument(
         "--sample",
         type=int,
         default=5,
         help="Randomly sample N questions (default: 5 questions; set 0 for all questions)"
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging for more verbose status output"
+    )
     args = parser.parse_args()
+
+    if args.debug:
+        configure_logging(logging.DEBUG)
+        logger.debug("Debug logging enabled")
 
     DATA_FILE    = get_data_file(args.dataset)
     RAG_ANSWERS  = os.path.join(EVAL_DIR, f"rag_responses_{args.dataset}.jsonl")
@@ -364,14 +387,24 @@ def main():
         logger.error(f"   Make sure you've run merge_eval_datasets.py first to create the split datasets.")
         exit(1)
 
+    logger.info(f"📁 Dataset file: {DATA_FILE}")
+    logger.info(f"🐘 Process ID: {os.getpid()}")
+    logger.info("⏱️  Counting questions in dataset file...")
     q_count = sum(1 for l in open(DATA_FILE, encoding="utf-8") if l.strip())
     logger.info(f"📋 Loaded {q_count} questions from '{DATA_FILE}' (dataset: {args.dataset})")
 
     brain = Brain()
-    logger.info("🔄 Syncing indices...")
-    brain.sync_indices()
+    logger.info(f"🧠 Brain indices present? {brain.is_built()}")
+    if brain.is_built():
+        logger.info("✅ Existing indices detected; loading brain directly.")
+        brain.load()
+    else:
+        logger.info("🔄 Syncing indices...")
+        brain.sync_indices()
 
+    logger.info("🚀 Starting Phase 2 (RAG inference). This may take a while, especially on the first question.")
     run_rag_inference(brain, args, DATA_FILE, RAG_ANSWERS)
+    logger.info("🚀 Starting Phase 3 (Judge & report).")
     run_judge_and_report(RAG_ANSWERS, FINAL_REPORT)
 
 

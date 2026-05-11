@@ -144,12 +144,19 @@ def get_dynamic_rerank_limit(top_score: float, base_limit: int = 5) -> int:
 
 
 def load_bm25(path):
-    """Loads the BM25 index and re-syncs the corpus."""
+    """Loads the BM25 index and re-syncs the corpus with re-indexing."""
     with open(path, "rb") as f:
         data = pickle.load(f)
     
     retriever = data["retriever"]
     retriever.corpus = data["corpus"]
+    
+    # Re-index the corpus to ensure the retriever's internal state is valid
+    if retriever.corpus and len(retriever.corpus) > 0:
+        tokenized_corpus = bm25s.tokenize(retriever.corpus)
+        retriever.index(tokenized_corpus)
+        logger.debug(f"✅ BM25 retriever re-indexed with {len(retriever.corpus)} documents")
+    
     return retriever
 
 
@@ -164,9 +171,19 @@ def _extract_bm25_documents(bm25_results, bm25_retriever) -> List[Document]:
             logger.debug("BM25 returned no documents")
             return docs
         
-        doc_indices = bm25_results.documents[0] if bm25_results.documents else []
+        doc_indices = bm25_results.documents
+        if doc_indices is None:
+            doc_indices = []
+        elif isinstance(doc_indices, np.ndarray):
+            doc_indices = doc_indices.flatten().tolist()
+        elif isinstance(doc_indices, (list, tuple)) and len(doc_indices) == 1 and isinstance(doc_indices[0], (list, tuple, np.ndarray)):
+            doc_indices = list(doc_indices[0])
+        elif isinstance(doc_indices, (list, tuple)):
+            doc_indices = list(doc_indices)
+        else:
+            doc_indices = list(doc_indices)
         
-        if not doc_indices:
+        if len(doc_indices) == 0:
             logger.debug("BM25 document indices are empty")
             return docs
         
@@ -175,7 +192,7 @@ def _extract_bm25_documents(bm25_results, bm25_retriever) -> List[Document]:
         elif not isinstance(doc_indices, (list, tuple)):
             doc_indices = list(doc_indices)
         
-        corpus = bm25_retriever.corpus if hasattr(bm25_retriever, 'corpus') else []
+        corpus = bm25_retriever.corpus if hasattr(bm25_retriever, 'corpus') and bm25_retriever.corpus is not None else []
         
         for idx in doc_indices:
             try:
@@ -225,47 +242,93 @@ def search_single_query(query, db, bm25_retriever, k=3) -> Tuple[List[Document],
         
         # Try BM25 search
         try:
+            # Defensive: ensure BM25 retriever has corpus and is indexed
+            if not hasattr(bm25_retriever, 'corpus') or bm25_retriever.corpus is None:
+                logger.warning("⚠️ BM25 retriever missing corpus, attempting to restore...")
+                logger.debug("BM25 search: 0 docs (corpus missing)")
+            else:
+                # Re-index to ensure the retriever's internal state is valid
+                if len(bm25_retriever.corpus) > 0:
+                    tokenized_corpus = bm25s.tokenize(bm25_retriever.corpus)
+                    bm25_retriever.index(tokenized_corpus)
+            
             query_tokens = bm25s.tokenize([query])
             bm25_results = bm25_retriever.retrieve(
                 query_tokens, k=k, return_as="tuple", show_progress=False
             )
-            bm25_doc_indices = bm25_results.documents[0] if bm25_results.documents else []
-            bm25_doc_scores = bm25_results.scores[0] if bm25_results.scores else []
             
-            if isinstance(bm25_doc_indices, np.ndarray):
+            logger.debug(f"BM25 raw results: documents={bm25_results.documents is not None}, scores={bm25_results.scores is not None}")
+            
+            bm25_doc_indices = bm25_results.documents
+            bm25_doc_scores = bm25_results.scores
+
+            if bm25_doc_indices is None:
+                bm25_doc_indices = []
+            elif isinstance(bm25_doc_indices, np.ndarray):
                 bm25_doc_indices = bm25_doc_indices.flatten().tolist()
-            elif not isinstance(bm25_doc_indices, (list, tuple)):
+            elif isinstance(bm25_doc_indices, (list, tuple)) and len(bm25_doc_indices) == 1 and isinstance(bm25_doc_indices[0], (list, tuple, np.ndarray)):
+                bm25_doc_indices = list(bm25_doc_indices[0])
+            elif isinstance(bm25_doc_indices, (list, tuple)):
                 bm25_doc_indices = list(bm25_doc_indices)
-            
-            if isinstance(bm25_doc_scores, np.ndarray):
+            else:
+                bm25_doc_indices = list(bm25_doc_indices)
+
+            if bm25_doc_scores is None:
+                bm25_doc_scores = []
+            elif isinstance(bm25_doc_scores, np.ndarray):
                 bm25_doc_scores = bm25_doc_scores.flatten().tolist()
-            elif not isinstance(bm25_doc_scores, (list, tuple)):
+            elif isinstance(bm25_doc_scores, (list, tuple)) and len(bm25_doc_scores) == 1 and isinstance(bm25_doc_scores[0], (list, tuple, np.ndarray)):
+                bm25_doc_scores = list(bm25_doc_scores[0])
+            elif isinstance(bm25_doc_scores, (list, tuple)):
                 bm25_doc_scores = list(bm25_doc_scores)
+            else:
+                bm25_doc_scores = list(bm25_doc_scores)
+
+            if len(bm25_doc_indices) == 0:
+                logger.debug("BM25 returned no document indices")
+                bm25_doc_scores = []
+
+            corpus = bm25_retriever.corpus if hasattr(bm25_retriever, 'corpus') and bm25_retriever.corpus is not None else []
+            logger.debug(f"BM25: {len(bm25_doc_indices)} indices, {len(corpus)} corpus items, {len(bm25_doc_scores)} scores")
             
-            corpus = bm25_retriever.corpus if hasattr(bm25_retriever, 'corpus') else []
             for idx, score in zip(bm25_doc_indices, bm25_doc_scores):
                 try:
-                    idx = int(idx)
-                    if 0 <= idx < len(corpus):
-                        doc_text = corpus[idx]
-                        if isinstance(doc_text, str):
-                            doc = Document(
-                                page_content=doc_text,
-                                metadata={"source": "bm25_search", "bm25_score": float(score)}
-                            )
-                        elif hasattr(doc_text, 'page_content'):
-                            doc = doc_text
-                            doc.metadata["bm25_score"] = float(score)
-                        else:
-                            logger.warning(f"Unknown BM25 result type: {type(doc_text)}")
-                            continue
+                    # Handle case where idx might already be a Document or string
+                    if isinstance(idx, str):
+                        # idx is actually document text, not an index
+                        logger.debug(f"BM25 returning document text directly (type: str)")
+                        doc = Document(
+                            page_content=idx,
+                            metadata={"source": "bm25_search", "bm25_score": float(score)}
+                        )
                         docs.append(doc)
                         bm25_scores.append(float(score))
+                    else:
+                        # idx should be an integer
+                        idx = int(idx)
+                        if 0 <= idx < len(corpus):
+                            doc_text = corpus[idx]
+                            if isinstance(doc_text, str):
+                                doc = Document(
+                                    page_content=doc_text,
+                                    metadata={"source": "bm25_search", "bm25_score": float(score)}
+                                )
+                            elif hasattr(doc_text, 'page_content'):
+                                doc = doc_text
+                                doc.metadata["bm25_score"] = float(score)
+                            else:
+                                logger.warning(f"Unknown BM25 result type: {type(doc_text)}")
+                                continue
+                            docs.append(doc)
+                            bm25_scores.append(float(score))
+                except ValueError as e:
+                    logger.debug(f"Failed to convert BM25 index to int (got type {type(idx).__name__}): {e}")
+                    continue
                 except Exception as e:
-                    logger.debug(f"Failed to process BM25 index {idx}: {e}")
+                    logger.debug(f"Failed to process BM25 result at index {idx}: {e}")
                     continue
             
-            logger.debug(f"BM25 search: {len(bm25_scores)} docs")
+            logger.debug(f"BM25 search: {len(bm25_scores)} docs (out of {len(bm25_doc_indices)} results)")
         except Exception as e:
             logger.warning(f"BM25 search failed for '{query}': {e}")
         
@@ -337,6 +400,16 @@ def _perform_hybrid_search(query, db, bm25_retriever, k=60, rerank_limit=5, extr
             unique_docs = deduplicate_documents(unique_docs, strategy='metadata')
             elapsed = time.time() - t_start
             logger.debug(f"Dedup: {len(doc_map)} → {len(unique_docs)} unique in {elapsed:.3f}s")
+            
+            # DEBUG: Log what we found
+            if not unique_docs:
+                logger.warning(f"⚠️ No documents found for query: '{query}'")
+                logger.warning(f"⚠️ This suggests: (1) Data folder may be empty, (2) BM25 index is broken, or (3) No matching documents")
+            else:
+                sources_found = set()
+                for doc in unique_docs[:5]:
+                    sources_found.add(doc.metadata.get("source", "unknown"))
+                logger.debug(f"Sources found: {sources_found}")
         except Exception as e:
             logger.error(f"Deduplication failed: {e}, using all docs")
         
@@ -373,9 +446,16 @@ def _perform_hybrid_search(query, db, bm25_retriever, k=60, rerank_limit=5, extr
             low_confidence = True
             if final_docs:
                 top_score = final_docs[0].metadata.get("rerank_score", 0.0)
-                confidence_pct = min(max(int(top_score * 10), 0), 100)
+                # BGE reranker outputs scores typically in range [0, 1]
+                # Convert to confidence percentage: 0.5 = 50%, 0.7 = 70%, etc.
+                confidence_pct = min(max(int(top_score * 100), 0), 100)
                 threshold = get_low_confidence_threshold()
                 low_confidence = confidence_pct < threshold
+                
+                # Log detailed confidence info for debugging
+                logger.debug(f"Top rerank score: {top_score:.4f} → Confidence: {confidence_pct}% | Threshold: {threshold}%")
+                if low_confidence:
+                    logger.warning(f"⚠️ Low confidence retrieval! Top score: {top_score:.4f} | Query: '{query[:50]}...'")
             
             total = time.time() - overall_start
             logger.info(f"Hybrid search TOTAL: {total:.3f}s | Confidence: {confidence_pct}%")

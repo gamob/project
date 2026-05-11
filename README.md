@@ -4,7 +4,7 @@ A local, air-gapped Retrieval-Augmented Generation (RAG) system built with Strea
 
 ## Overview
 
-This project is designed for secure document search and question answering over enterprise content without sending data to external services.
+This project is designed for secure document search and question answering over enterprise content without sending data to external services. Note that its being tested and used on a server with 96 cores cpu and dual a2 setup.
 
 - Hybrid retrieval using semantic embeddings + BM25 keyword matching
 - Reciprocal Rank Fusion (RRF) for stronger search ranking

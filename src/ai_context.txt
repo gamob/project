@@ -5,6 +5,8 @@ Purpose
 -------
 This file summarizes the important `src` modules and folders so an AI agent can quickly identify which files to modify for a requested change.
 
+Note: this repository is executed on a Linux GPU server, not on the current VS Code workstation.
+
 Top-level `src` files
 --------------------
 - `app.py` - Minimal entrypoint that imports the Streamlit UI from `src/ui/app.py`.

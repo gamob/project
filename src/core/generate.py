@@ -42,17 +42,36 @@ REFERENTIAL_WORDS = {
 }
 SHORT_QUERY_THRESHOLD = 8
 GREETINGS = {"hi", "hello", "hey", "thanks", "thank", "ok", "okay", "bye", "great", "cool"}
+# Questions that should always trigger rewriting for better search results
+REWRITE_TRIGGERS = {
+    "how", "what", "where", "when", "why", "which",  # Question starters
+    "install", "setup", "configure", "build", "create", "run", "execute",  # Action words
+    "tutorial", "guide", "help", "steps", "process", "instruction",  # Help-seeking words
+}
 
 
 def _needs_query_rewrite(query: str) -> bool:
     """Determine if query needs rewriting for better search."""
     words = query.lower().split()
-    if all(w.strip(".,!?") in GREETINGS for w in words):
+    cleaned_words = [w.strip(".,!?") for w in words]
+    
+    # Don't rewrite pure greetings
+    if all(w in GREETINGS for w in cleaned_words):
         return False
-    has_referential = any(w in REFERENTIAL_WORDS for w in words)
-    if len(words) <= SHORT_QUERY_THRESHOLD and not has_referential:
-        return False
-    return True
+    
+    # Always rewrite if contains question starters or action triggers
+    if any(w in REWRITE_TRIGGERS for w in cleaned_words):
+        return True
+    
+    # Rewrite referential queries (follow-ups)
+    if any(w in REFERENTIAL_WORDS for w in cleaned_words):
+        return True
+    
+    # Rewrite longer queries for better expansion
+    if len(words) > SHORT_QUERY_THRESHOLD:
+        return True
+    
+    return False
 
 
 def check_ollama_health() -> Tuple[bool, str]:
@@ -189,7 +208,11 @@ def answer_question(query, docs, stream=False):
         else:
             result = llm.invoke(prompt).strip()
         elapsed = time.time() - t_start
-        logger.info(f"llm.invoke: {elapsed:.3f}s | Output: {len(result)} chars")
+        # Only log length for non-stream results
+        if not stream:
+            logger.info(f"llm.invoke: {elapsed:.3f}s | Output: {len(result)} chars")
+        else:
+            logger.info(f"llm.invoke: {elapsed:.3f}s | Output: streaming")
         
         # Total time
         total = time.time() - overall_start
