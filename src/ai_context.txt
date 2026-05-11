@@ -7,8 +7,8 @@ This file summarizes the important `src` modules and folders so an AI agent can 
 
 Top-level `src` files
 --------------------
-- `app.py` - Streamlit desktop app entry point. Handles initialization, session state, user input, display of chat messages, search flow, and calls into `Brain`.
-- `app_terminal.py` - Terminal-based UI entry point. Similar to `app.py` but for terminal interaction.
+- `app.py` - Minimal entrypoint that imports the Streamlit UI from `src/ui/app.py`.
+- `app_terminal.py` - Terminal-based UI entry point. Similar to `src/ui/app.py` but for CLI interaction.
 - `main_ui.py` - Secondary UI wrapper or higher-level UI entry script.
 - `generate_evals.py`, `merge_eval_datasets.py`, `polish_eval_runner.py`, `prep_questions.py` - Evaluation/data preparation scripts used outside the main production flow.
 - `config.json` - Runtime configuration file for project paths and settings.
@@ -17,7 +17,7 @@ Top-level `src` files
 
 Key folders
 -----------
-- `core/` - Primary logic for the RAG system.
+- `core/` - Primary logic for the Hybrid RAG system.
 - `data/` - Document loading and chunking utilities.
 - `docs/` - Developer notes, guides, and change logs.
 - `eval/` - Evaluation workflows and dataset tooling.
@@ -26,30 +26,30 @@ Key folders
 
 `src/core` overview
 -------------------
-- `brain_service.py` - Central orchestrator. Loads/builds indices, syncs data changes, and exposes `search()` for the UI.
-- `retrieve.py` - Hybrid retrieval code. Contains the core search orchestration, BM25 extraction, deduplication, and reranking logic.
-- `retrieval_service.py` - Service wrapper around `retrieve.py`. Holds singleton retrieval state and provides a stable search API.
-- `hybrid_search_config.py` - Configuration and fusion implementation for hybrid search. Defines RRF, score normalization, and tuning defaults.
-- `generate.py` - LLM prompt builder and query rewriting. Handles Ollama health check, chat contextless generation, and source extraction.
-- `conversation_context.py` - Multi-turn session context helper. Builds follow-up-aware queries and conversation state summaries.
-- `embed_store.py` - Embedding and indexing helpers. Builds/saves FAISS vectors and BM25 index, plus incremental updates.
-- `index_service.py` - Index loading and index creation abstraction. Connects `embed_store` to the rest of the brain.
-- `reranker.py` - Cross-encoder reranking implementation.
-- `config_service.py` - Reads project configuration and environment variables.
-- `faithfulness_check.py` - Quality check utilities for retrieval/answer faithfulness.
+- `brain_service.py` - Central orchestrator for index lifecycle, incremental sync, and high-level search.
+- `retrieve.py` - Hybrid retrieval engine. Manages vector + BM25 search, deduplication, score fusion, and reranking.
+- `retrieval_service.py` - Singleton retrieval service wrapper around `retrieve.py`, eager-loading models and exposing a stable API.
+- `hybrid_search_config.py` - Hybrid search policy and fusion settings. Defines normalization, RRF, and confidence behavior.
+- `generate.py` - LLM prompt builder, search query rewriting, source extraction, and answer generation.
+- `conversation_context.py` - Multi-turn session helper. Builds follow-up-aware search queries and short summaries from chat history.
+- `embed_store.py` - Embedding and index helpers. Builds/saves FAISS vector stores, creates BM25 indices, and supports incremental updates.
+- `index_service.py` - Index abstraction layer. Creates, loads, and updates vector + BM25 indices via `embed_store`.
+- `reranker.py` - Cross-encoder reranker interface and implementation.
+- `config_service.py` - Configuration loader and runtime settings provider.
+- `faithfulness_check.py` - Quality check utilities for retrieval and answer faithfulness.
 - `main.py` - Secondary brain or application entrypoint for scripts.
 - `logging_config.py` - Logging setup and formatting utilities.
-- `__init__.py` - Python package marker.
+- `__init__.py` - Package marker.
 
 `src/ui` overview
 -----------------
-- `app.py` - Main Streamlit frontend that users interact with.
+- `app.py` - Main Streamlit frontend users interact with. Handles UI, user input, streaming response display, and session state.
 - `app_terminal.py` - CLI-based interface for terminal sessions.
-- `main_ui.py` - Possibly a wrapper around the main UI flow.
+- `main_ui.py` - Possibly a wrapper around the primary UI flow.
 
 `src/storage` overview
 ----------------------
-- `chat_store.py` - SQLite-backed storage for chat sessions, messages, and conversation history.
+- `chat_store.py` - SQLite-backed persistence for chat sessions, messages, and conversation history.
 
 `src/data` overview
 -------------------
@@ -59,6 +59,64 @@ Key folders
 `src/docs` overview
 -------------------
 - Developer documentation and upgrade notes.
+
+Data Flow Pipeline
+------------------
+1. User input starts in `src/app.py`, which imports `src/ui/app.py` and launches the Streamlit UI.
+2. `src/ui/app.py` receives the user prompt from `st.chat_input`.
+3. If there is no active session, `chat_store.create_session()` creates a new SQLite session and `st.session_state.session_id` is set.
+4. The UI persists the user message via `save_message(session_id, "user", prompt)` and appends it to `st.session_state.messages`.
+5. `ConversationContext` loads recent session messages from `chat_store.load_session_messages()` and decides whether the query is a follow-up.
+6. `ConversationContext.generate_context_aware_query()` returns an enhanced query plus context metadata.
+7. `generate_search_queries()` optionally rewrites the query with `OllamaLLM` if the input needs better search phrasing.
+8. `Brain.search()` is called from `src/ui/app.py` using the enhanced rewritten query.
+9. `Brain.search()` delegates to `RetrievalService.search()` after verifying indices are loaded.
+10. `RetrievalService.search()` calls `retrieve._perform_hybrid_search()` with FAISS and BM25 indices plus reranker.
+11. `_perform_hybrid_search()` executes:
+   - vector search via FAISS
+   - BM25 search via the BM25 retriever
+   - document deduplication
+   - score normalization and hybrid fusion
+   - candidate reranking with `CrossEncoderReranker`
+12. Final documents and confidence metadata return to the UI.
+13. `src/core/generate.py.answer_question()` builds a prompt with retrieved doc context and calls `llm.invoke()` or `llm.stream()`.
+14. The LLM response streams back to `src/ui/app.py`, which displays it and preserves the assistant message in session state.
+
+Core Class Registry
+-------------------
+- `Brain` (`src/core/brain_service.py`): orchestrates index loading, incremental sync, and search; connects `IndexService`, `RetrievalService`, and document pipelines.
+- `IndexService` (`src/core/index_service.py`): unified index manager for creating, loading, and incrementally updating FAISS and BM25 indices.
+- `RetrievalService` (`src/core/retrieval_service.py`): singleton retrieval orchestration with eager reranker loading; exposes `search()` to the app.
+- `ConversationContext` (`src/core/conversation_context.py`): session-aware query enhancer and summary generator for follow-up detection.
+- `CrossEncoderReranker` (`src/core/reranker.py`): reranks candidate documents using a sentence-transformers cross-encoder.
+- `ConfigManager` (`src/core/config_service.py`): loads `config.json`, exposes safe getters, and determines project root.
+
+Dependency Mapping
+------------------
+- `src/ui/app.py` depends on `src/core/brain_service.py`, `src/core/conversation_context.py`, `src/core/generate.py`, and `src/storage/chat_store.py`.
+- `Brain` depends on `src/core/index_service.py`, `src/core/retrieval_service.py`, `src/data/load_data.py`, `src/data/split_text.py`, and `src/core/generate.py`.
+- `IndexService` depends on `src/core/embed_store.py` and `src/core/config_service.py`.
+- `RetrievalService` depends on `src/core/retrieve.py` and `src/core/reranker.py`.
+- `retrieve.py` depends on `src/core/hybrid_search_config.py`, `src/core/reranker.py`, and `src/core/config_service.py`.
+- `conversation_context.py` depends on `src/storage/chat_store.py`.
+- `generate.py` depends on `langchain_ollama`, `requests`, and `src/core/config_service.py` indirectly through the LLM environment.
+- `chat_store.py` is standalone storage and is consumed by `src/ui/app.py` and `src/core/conversation_context.py`.
+
+State & Persistence
+-------------------
+- `st.session_state` is the in-memory Streamlit session cache.
+  - `brain` stores the loaded `Brain` instance and index connection state.
+  - `messages` stores the current chat transcript for UI rendering.
+  - `session_id` tracks the active SQLite chat session.
+  - transient UI flags such as `ollama_healthy` and `renaming_id` are also kept there.
+- `chat_store.py` persists session metadata and messages to SQLite:
+  - `create_session()` inserts a new session row.
+  - `save_message()` appends each user or assistant message to `messages`.
+  - `load_session_messages()` rebuilds chat history for session restoration.
+- Interaction pattern:
+  - UI writes user and assistant turns into both `st.session_state.messages` and SQLite.
+  - When a saved session is reloaded, `st.session_state.messages` is repopulated from `chat_store.load_session_messages()`.
+  - This keeps the UI responsive while preserving durable conversational history.
 
 When to edit which file
 -----------------------
