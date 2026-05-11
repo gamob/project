@@ -60,14 +60,14 @@ class RetrievalService:
         logger.info("📚 Indices connected to RetrievalService")
     
     def search(self, query: str, extra_queries: Optional[List[str]] = None,
-               k: int = 20, rerank_limit: int = 5) -> Tuple[List[Document], bool, int]:
+               k: int = 60, rerank_limit: int = 5) -> Tuple[List[Document], bool, int]:
         """
         Perform hybrid search with reranking.
         
         Args:
             query: User query
             extra_queries: Additional queries for hybrid search
-            k: Number of documents to retrieve
+            k: Number of documents to retrieve per individual query
             rerank_limit: Top K after reranking
         
         Returns:

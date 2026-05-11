@@ -8,6 +8,7 @@ import numpy as np
 from typing import List, Tuple, Optional
 from langchain_core.documents import Document
 from .config_service import ConfigManager
+from .hybrid_search_config import HybridSearchConfig, fuse_hybrid_scores
 from .reranker import CrossEncoderReranker
 
 logger = logging.getLogger(__name__)
@@ -203,49 +204,84 @@ def _extract_bm25_documents(bm25_results, bm25_retriever) -> List[Document]:
 
 # ============ SINGLE QUERY SEARCH ============
 
-def search_single_query(query, db, bm25_retriever, k=3) -> Tuple[List[Document], float, int]:
-    """Search using both vector and BM25 with error handling."""
+def search_single_query(query, db, bm25_retriever, k=3) -> Tuple[List[Document], list, list, int]:
+    """Search using both vector and BM25 with error handling and return scores for fusion."""
     try:
         docs = []
-        min_l2 = float('inf')
+        vector_scores = []
+        bm25_scores = []
         
         # Try vector search
         try:
             docs_with_scores = db.similarity_search_with_score(query, k=k)
-            vector_docs = [doc for doc, score in docs_with_scores]
-            docs.extend(vector_docs)
+            for doc, score in docs_with_scores:
+                doc.metadata["vector_score"] = float(score)
+                docs.append(doc)
+                vector_scores.append(float(score))
             
-            if docs_with_scores:
-                min_l2 = min(score for _, score in docs_with_scores)
-            
-            logger.debug(f"Vector search: {len(vector_docs)} docs")
+            logger.debug(f"Vector search: {len(docs_with_scores)} docs")
         except Exception as e:
             logger.warning(f"Vector search failed for '{query}': {e}")
         
         # Try BM25 search
         try:
             query_tokens = bm25s.tokenize([query])
-            bm25_results = bm25_retriever.retrieve(query_tokens, k=k)
-            bm25_docs = _extract_bm25_documents(bm25_results, bm25_retriever)
-            docs.extend(bm25_docs)
+            bm25_results = bm25_retriever.retrieve(
+                query_tokens, k=k, return_as="tuple", show_progress=False
+            )
+            bm25_doc_indices = bm25_results.documents[0] if bm25_results.documents else []
+            bm25_doc_scores = bm25_results.scores[0] if bm25_results.scores else []
             
-            logger.debug(f"BM25 search: {len(bm25_docs)} docs")
+            if isinstance(bm25_doc_indices, np.ndarray):
+                bm25_doc_indices = bm25_doc_indices.flatten().tolist()
+            elif not isinstance(bm25_doc_indices, (list, tuple)):
+                bm25_doc_indices = list(bm25_doc_indices)
+            
+            if isinstance(bm25_doc_scores, np.ndarray):
+                bm25_doc_scores = bm25_doc_scores.flatten().tolist()
+            elif not isinstance(bm25_doc_scores, (list, tuple)):
+                bm25_doc_scores = list(bm25_doc_scores)
+            
+            corpus = bm25_retriever.corpus if hasattr(bm25_retriever, 'corpus') else []
+            for idx, score in zip(bm25_doc_indices, bm25_doc_scores):
+                try:
+                    idx = int(idx)
+                    if 0 <= idx < len(corpus):
+                        doc_text = corpus[idx]
+                        if isinstance(doc_text, str):
+                            doc = Document(
+                                page_content=doc_text,
+                                metadata={"source": "bm25_search", "bm25_score": float(score)}
+                            )
+                        elif hasattr(doc_text, 'page_content'):
+                            doc = doc_text
+                            doc.metadata["bm25_score"] = float(score)
+                        else:
+                            logger.warning(f"Unknown BM25 result type: {type(doc_text)}")
+                            continue
+                        docs.append(doc)
+                        bm25_scores.append(float(score))
+                except Exception as e:
+                    logger.debug(f"Failed to process BM25 index {idx}: {e}")
+                    continue
+            
+            logger.debug(f"BM25 search: {len(bm25_scores)} docs")
         except Exception as e:
             logger.warning(f"BM25 search failed for '{query}': {e}")
         
         if not docs:
             logger.warning(f"No results from either search method for: {query}")
         
-        return docs, min_l2, len(docs)
+        return docs, vector_scores, bm25_scores, len(docs)
     
     except Exception as e:
         logger.error(f"search_single_query failed: {e}", exc_info=True)
-        return [], float('inf'), 0
+        return [], [], [], 0
 
 
 # ============ HYBRID SEARCH ============
 
-def _perform_hybrid_search(query, db, bm25_retriever, k=15, rerank_limit=5, extra_queries=None, reranker=None):
+def _perform_hybrid_search(query, db, bm25_retriever, k=60, rerank_limit=5, extra_queries=None, reranker=None):
     """
     Core hybrid search orchestration logic shared by multiple interfaces.
     
@@ -262,38 +298,66 @@ def _perform_hybrid_search(query, db, bm25_retriever, k=15, rerank_limit=5, extr
         (documents, low_confidence, confidence_pct)
     """
     overall_start = time.time()
+    config = HybridSearchConfig()
     
     try:
         all_queries = [query] + (extra_queries or [])
-        all_docs = []
+        doc_map = {}
         
-        logger.debug(f"Searching {len(all_queries)} queries...")
+        logger.debug(f"Searching {len(all_queries)} queries with k={k} and RRF k={config.rrf_k}...")
         
         # Search with all queries
         for i, q in enumerate(all_queries, 1):
             try:
                 t_start = time.time()
-                docs, _, _ = search_single_query(q, db, bm25_retriever, k=k)
+                docs, _, _, _ = search_single_query(q, db, bm25_retriever, k=k)
                 elapsed = time.time() - t_start
                 logger.debug(f"  Query {i}/{len(all_queries)}: {len(docs)} docs in {elapsed:.3f}s")
-                all_docs.extend(docs)
+                for doc in docs:
+                    doc_id = get_document_id(doc)
+                    existing = doc_map.get(doc_id)
+                    if existing is None:
+                        doc_map[doc_id] = doc
+                    else:
+                        for score_key in ("vector_score", "bm25_score"):
+                            if score_key in doc.metadata and doc.metadata[score_key] is not None:
+                                existing.metadata[score_key] = doc.metadata[score_key]
             except Exception as e:
                 logger.error(f"Query '{q}' failed: {e}")
                 continue
         
-        if not all_docs:
+        unique_docs = list(doc_map.values())
+        if not unique_docs:
             logger.warning(f"No documents retrieved for: {query}")
             return [], True, 0
         
         # Deduplicate with timing
         try:
             t_start = time.time()
-            unique_docs = deduplicate_documents(all_docs, strategy='metadata')
+            unique_docs = deduplicate_documents(unique_docs, strategy='metadata')
             elapsed = time.time() - t_start
-            logger.debug(f"Dedup: {len(all_docs)} → {len(unique_docs)} unique in {elapsed:.3f}s")
+            logger.debug(f"Dedup: {len(doc_map)} → {len(unique_docs)} unique in {elapsed:.3f}s")
         except Exception as e:
             logger.error(f"Deduplication failed: {e}, using all docs")
-            unique_docs = all_docs
+        
+        # Prepare hybrid ranking scores
+        vector_scores = np.array([doc.metadata.get("vector_score", np.nan) for doc in unique_docs], dtype=float)
+        bm25_scores = np.array([doc.metadata.get("bm25_score", np.nan) for doc in unique_docs], dtype=float)
+        
+        if np.isnan(vector_scores).any():
+            replacement = np.nanmax(vector_scores) if not np.isnan(vector_scores).all() else 0.0
+            vector_scores = np.nan_to_num(vector_scores, nan=replacement + 1.0)
+        if np.isnan(bm25_scores).any():
+            replacement = np.nanmin(bm25_scores) if not np.isnan(bm25_scores).all() else 0.0
+            bm25_scores = np.nan_to_num(bm25_scores, nan=replacement - 1.0)
+        
+        fused_scores = fuse_hybrid_scores(vector_scores.tolist(), bm25_scores.tolist(), config)
+        ranked_indices = np.argsort(-fused_scores)
+        ranked_docs = [unique_docs[i] for i in ranked_indices]
+        for doc, score in zip(ranked_docs, fused_scores[ranked_indices]):
+            doc.metadata["hybrid_score"] = float(score)
+        
+        candidate_docs = ranked_docs[: max(k, rerank_limit * 3)]
         
         # Rerank with provided or lazy-loaded reranker
         try:
@@ -301,14 +365,12 @@ def _perform_hybrid_search(query, db, bm25_retriever, k=15, rerank_limit=5, extr
                 reranker = get_reranker()
             
             t_start = time.time()
-            final_docs = reranker.rerank(query, unique_docs, top_k=rerank_limit)
+            final_docs = reranker.rerank(query, candidate_docs, top_k=rerank_limit)
             elapsed = time.time() - t_start
-            logger.info(f"Reranking: {len(unique_docs)} docs → {len(final_docs)} in {elapsed:.3f}s")
+            logger.info(f"Reranking: {len(candidate_docs)} docs → {len(final_docs)} in {elapsed:.3f}s")
             
-            # Calculate confidence
             confidence_pct = 0
             low_confidence = True
-            
             if final_docs:
                 top_score = final_docs[0].metadata.get("rerank_score", 0.0)
                 confidence_pct = min(max(int(top_score * 10), 0), 100)
@@ -318,11 +380,11 @@ def _perform_hybrid_search(query, db, bm25_retriever, k=15, rerank_limit=5, extr
             total = time.time() - overall_start
             logger.info(f"Hybrid search TOTAL: {total:.3f}s | Confidence: {confidence_pct}%")
             return final_docs, low_confidence, confidence_pct
-        
         except Exception as e:
-            logger.warning(f"Reranking failed: {e}, falling back to unranked results")
-            logger.info(f"Falling back to unranked results: {len(unique_docs)} docs")
-            return unique_docs[:rerank_limit], True, 0
+            logger.warning(f"Reranking failed: {e}, falling back to hybrid ranked results")
+            logger.info(f"Falling back to hybrid ranked results: {len(candidate_docs)} docs")
+            fallback_docs = candidate_docs[:rerank_limit]
+            return fallback_docs, True, 0
     
     except Exception as e:
         logger.error(f"Hybrid search failed completely: {e}", exc_info=True)

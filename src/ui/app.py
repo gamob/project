@@ -3,6 +3,7 @@ import os
 
 # --- NEW SERVICE IMPORT ---
 from ..core.brain_service import Brain
+from ..core.conversation_context import ConversationContext
 
 # --- OTHER IMPORTS ---
 from ..core.generate import answer_question, check_ollama_health, generate_search_queries
@@ -215,9 +216,18 @@ if prompt := st.chat_input("Ask me anything about the documents..."):
 
     with st.chat_message("assistant"):
         with st.status("🦖 Searching & Thinking...", expanded=False) as status:
+            session_context = ConversationContext(st.session_state.session_id)
+            enhanced_query, ctx_type = session_context.generate_context_aware_query(prompt)
+            session_summary = session_context.get_summary_for_context_window(max_chars=400)
+
             st.write("Refining search query...")
-            # --- FIXED: Removed history argument ---
-            rewritten_query, query_variations = generate_search_queries(prompt)
+            if ctx_type != "standalone":
+                status.write(f"Detected conversation follow-up: {ctx_type}.")
+            if session_summary:
+                status.write("Applying recent session summary to search.")
+                enhanced_query = f"{enhanced_query}. Recent context: {session_summary}"
+
+            rewritten_query, query_variations = generate_search_queries(enhanced_query)
 
             st.write("Checking the library...")
             

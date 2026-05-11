@@ -1,0 +1,86 @@
+AI Context for `src` folder
+===========================
+
+Purpose
+-------
+This file summarizes the important `src` modules and folders so an AI agent can quickly identify which files to modify for a requested change.
+
+Top-level `src` files
+--------------------
+- `app.py` - Streamlit desktop app entry point. Handles initialization, session state, user input, display of chat messages, search flow, and calls into `Brain`.
+- `app_terminal.py` - Terminal-based UI entry point. Similar to `app.py` but for terminal interaction.
+- `main_ui.py` - Secondary UI wrapper or higher-level UI entry script.
+- `generate_evals.py`, `merge_eval_datasets.py`, `polish_eval_runner.py`, `prep_questions.py` - Evaluation/data preparation scripts used outside the main production flow.
+- `config.json` - Runtime configuration file for project paths and settings.
+- `__init__.py` - Marks `src` as a Python package.
+- `srcclaude.zip` - Compressed archive, likely unrelated to direct code edits.
+
+Key folders
+-----------
+- `core/` - Primary logic for the RAG system.
+- `data/` - Document loading and chunking utilities.
+- `docs/` - Developer notes, guides, and change logs.
+- `eval/` - Evaluation workflows and dataset tooling.
+- `storage/` - Persistence layer for chat sessions and metadata.
+- `ui/` - Streamlit UI components and app structure.
+
+`src/core` overview
+-------------------
+- `brain_service.py` - Central orchestrator. Loads/builds indices, syncs data changes, and exposes `search()` for the UI.
+- `retrieve.py` - Hybrid retrieval code. Contains the core search orchestration, BM25 extraction, deduplication, and reranking logic.
+- `retrieval_service.py` - Service wrapper around `retrieve.py`. Holds singleton retrieval state and provides a stable search API.
+- `hybrid_search_config.py` - Configuration and fusion implementation for hybrid search. Defines RRF, score normalization, and tuning defaults.
+- `generate.py` - LLM prompt builder and query rewriting. Handles Ollama health check, chat contextless generation, and source extraction.
+- `conversation_context.py` - Multi-turn session context helper. Builds follow-up-aware queries and conversation state summaries.
+- `embed_store.py` - Embedding and indexing helpers. Builds/saves FAISS vectors and BM25 index, plus incremental updates.
+- `index_service.py` - Index loading and index creation abstraction. Connects `embed_store` to the rest of the brain.
+- `reranker.py` - Cross-encoder reranking implementation.
+- `config_service.py` - Reads project configuration and environment variables.
+- `faithfulness_check.py` - Quality check utilities for retrieval/answer faithfulness.
+- `main.py` - Secondary brain or application entrypoint for scripts.
+- `logging_config.py` - Logging setup and formatting utilities.
+- `__init__.py` - Python package marker.
+
+`src/ui` overview
+-----------------
+- `app.py` - Main Streamlit frontend that users interact with.
+- `app_terminal.py` - CLI-based interface for terminal sessions.
+- `main_ui.py` - Possibly a wrapper around the main UI flow.
+
+`src/storage` overview
+----------------------
+- `chat_store.py` - SQLite-backed storage for chat sessions, messages, and conversation history.
+
+`src/data` overview
+-------------------
+- `load_data.py` - Document loading utilities for multiple file types.
+- `split_text.py` - Chunking and splitting logic.
+
+`src/docs` overview
+-------------------
+- Developer documentation and upgrade notes.
+
+When to edit which file
+-----------------------
+- UI changes or session flow: `src/ui/app.py`, `src/ui/app_terminal.py`, `src/ui/main_ui.py`
+- Search / retrieval tuning: `src/core/retrieve.py`, `src/core/retrieval_service.py`, `src/core/hybrid_search_config.py`
+- Brain lifecycle / index loading: `src/core/brain_service.py`, `src/core/index_service.py`, `src/core/embed_store.py`
+- Query rewriting or prompt behavior: `src/core/generate.py`, `src/core/conversation_context.py`
+- Storage/session persistence: `src/storage/chat_store.py`
+- Project config and runtime parameters: `src/config.json`, `src/core/config_service.py`
+- Documentation notes: `src/docs/*`
+
+Quick mapping for common requests
+---------------------------------
+- "Improve retrieval scoring": `src/core/retrieve.py` + `src/core/hybrid_search_config.py`
+- "Add multi-turn awareness": `src/core/conversation_context.py` + `src/ui/app.py`
+- "Change how chat is saved": `src/storage/chat_store.py`
+- "Update LLM prompt": `src/core/generate.py`
+- "Rebuild vector index": `src/core/brain_service.py`, `src/core/index_service.py`, `src/core/embed_store.py`
+- "Streamlit interface update": `src/ui/app.py`
+
+Notes
+-----
+- For most RAG logic, `src/core` is the primary edit target.
+- UI changes should be made in `src/ui/app.py` unless specifically for terminal or secondary UI flows.
+- Evaluation tooling is separate and not part of the core production path.
