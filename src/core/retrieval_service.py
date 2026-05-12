@@ -76,9 +76,11 @@ class RetrievalService:
         if not self.vector_store or not self.bm25_retriever:
             raise ValueError("Indices not loaded! Call set_indices() first.")
         
+        print(f"[APP_DEBUG] RetrievalService.search called with query: {query[:50]}")
+        
         # Delegate to shared hybrid search implementation
         # Pass pre-loaded reranker to avoid reloading
-        return _perform_hybrid_search(
+        result = _perform_hybrid_search(
             query,
             self.vector_store,
             self.bm25_retriever,
@@ -87,6 +89,10 @@ class RetrievalService:
             extra_queries=extra_queries,
             reranker=self.reranker
         )
+        
+        docs, low_conf, conf_pct = result
+        print(f"[APP_DEBUG] RetrievalService.search returning: {len(docs)} docs, conf={conf_pct}%")
+        return result
 
 
 # Global instance (singleton pattern)

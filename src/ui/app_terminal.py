@@ -12,10 +12,19 @@ from typing import Optional, List, Tuple
 from datetime import datetime
 from unittest.mock import MagicMock
 
-# Suppress Streamlit warnings (inherited from dependencies on Linux servers)
-warnings.filterwarnings("ignore", category=UserWarning, module="streamlit")
-warnings.filterwarnings("ignore", message=".*ScriptRunContext.*")
+# Suppress all library warnings and progress bars
+warnings.filterwarnings("ignore")
 os.environ["STREAMLIT_LOGGER_LEVEL"] = "error"
+
+# Suppress tqdm and other library progress bars
+os.environ["TQDM_DISABLE"] = "1"
+
+# Suppress logging from external libraries
+import logging
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("bm25s").setLevel(logging.ERROR)
+logging.getLogger("faiss").setLevel(logging.ERROR)
 
 mock_st = MagicMock()
 sys.modules["streamlit"] = mock_st
@@ -208,6 +217,8 @@ class TerminalBrain:
         response_text = ""
         
         try:
+            self.console.print(f"[dim][DEBUG] Starting question processing for: {prompt[:50]}...[/dim]")
+            
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
@@ -216,51 +227,95 @@ class TerminalBrain:
             ) as progress:
                 # Generate search queries
                 task_id = progress.add_task("Refining search query...", total=None)
+                self.console.print(f"[dim][DEBUG] Calling generate_search_queries[/dim]")
                 rewritten_query, query_variations = generate_search_queries(prompt)
-                progress.stop()
+                self.console.print(f"[dim][DEBUG] Rewritten query: {rewritten_query}[/dim]")
+                progress.update(task_id, completed=True)
                 
                 # Search in brain
-                progress = Progress(
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    console=self.console,
-                    transient=True
+                progress.update(task_id, description="Checking the library...", completed=False)
+                self.console.print(f"[dim][DEBUG] Calling brain.search[/dim]")
+                docs, low_confidence, confidence_pct = self.brain.search(
+                    rewritten_query,
+                    extra_queries=query_variations
                 )
-                with progress:
-                    task_id = progress.add_task("Checking the library...", total=None)
-                    docs, low_confidence, confidence_pct = self.brain.search(
-                        rewritten_query,
-                        extra_queries=query_variations
-                    )
-                
-                # Generate response
-                progress = Progress(
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    console=self.console,
-                    transient=True
+                self.console.print(f"[dim][DEBUG] Found {len(docs)} documents, confidence: {confidence_pct}%[/dim]")
+                progress.update(task_id, completed=True)
+            
+            # Generate response
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=self.console,
+                transient=True
+            ) as progress:
+                task_id = progress.add_task("Consulting the Llama...", total=None)
+                self.console.print(f"[dim][DEBUG] Calling answer_question with stream=True[/dim]")
+                response_gen, sources = answer_question(
+                    prompt,
+                    docs,
+                    stream=True
                 )
-                with progress:
-                    task_id = progress.add_task("Consulting the Llama...", total=None)
-                    response_gen, sources = answer_question(
-                        prompt,
-                        docs,
-                        stream=True
-                    )
-                
-                # Collect streamed response
-                for chunk in response_gen:
-                    response_text += chunk
-                    self.console.print(chunk, end="", highlight=False)
-                    self.console.file.flush()
-                
+                self.console.print(f"[dim][DEBUG] answer_question returned: type={type(response_gen)}, sources={len(sources)}[/dim]")
+                progress.update(task_id, completed=True)
+            
+            # Display streamed response
+            self.console.print()  # Newline before answer
+            self.console.print(f"[dim][DEBUG] Response type: {type(response_gen).__name__}[/dim]")
+            
+            if response_gen:
+                self.console.print(f"[dim][DEBUG] Response is truthy, attempting iteration[/dim]")
+                chunk_count = 0
+                try:
+                    # Iterate through the stream and collect/display chunks
+                    for chunk in response_gen:
+                        chunk_count += 1
+                        # Safely handle chunk - it should be a string
+                        chunk_str = str(chunk) if chunk is not None else ""
+                        chunk_preview = repr(chunk_str[:30]) if len(chunk_str) > 30 else repr(chunk_str)
+                        self.console.print(f"[dim][DEBUG] Chunk {chunk_count}: {chunk_preview}[/dim]")
+                        response_text += chunk_str
+                        # Always print chunks, even if empty (to show whitespace/newlines)
+                        if chunk_str:
+                            self.console.print(chunk_str, end="", highlight=False)
+                            self.console.file.flush()
+                    
+                    self.console.print(f"\n[dim][DEBUG] Iteration complete, collected {chunk_count} chunks, total length: {len(response_text)}[/dim]")
+                    
+                    # If we collected chunks but response_text is empty/whitespace, show a message
+                    if chunk_count > 0 and not response_text.strip():
+                        self.console.print("[yellow]⚠ The model returned only whitespace. Please try a different question.[/yellow]")
+                except (TypeError, AttributeError) as e:
+                    self.console.print(f"[dim][DEBUG] Error during iteration: {e}[/dim]")
+                    # Fallback: try treating as string
+                    try:
+                        if isinstance(response_gen, str):
+                            self.console.print(f"[dim][DEBUG] Treating as string response[/dim]")
+                            response_text = response_gen
+                            if response_text:
+                                self.console.print(response_text)
+                            else:
+                                self.console.print("[yellow]⚠ The model returned an empty response. Please try again.[/yellow]")
+                        else:
+                            self.console.print(f"[dim][DEBUG] Could not process response of type {type(response_gen)}[/dim]")
+                            self.console.print("[yellow]⚠ No response generated[/yellow]")
+                    except:
+                        self.console.print("[yellow]⚠ Error processing response[/yellow]")
+                        
                 self.console.print()  # Newline after response
-                
-                # Show sources and confidence
-                self._show_sources(sources, confidence_pct)
+            else:
+                self.console.print(f"[dim][DEBUG] Response is falsy (None or empty)[/dim]")
+                self.console.print("[yellow]⚠ No response generated[/yellow]")
+            
+            self.console.print(f"[dim][DEBUG] Total response_text length: {len(response_text)}[/dim]")
+            
+            # Show sources and confidence
+            self._show_sources(sources, confidence_pct)
                 
         except Exception as e:
             self.console.print(f"[red]Error processing question: {e}[/red]")
+            import traceback
+            self.console.print(f"[dim]{traceback.format_exc()}[/dim]")
         
         return response_text
     

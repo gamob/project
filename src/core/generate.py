@@ -3,10 +3,14 @@ from langchain_ollama import OllamaLLM
 import os
 import logging
 import time
+import sys
 from functools import lru_cache
 from typing import Tuple, Set
 
 logger = logging.getLogger(__name__)
+
+# Force logging to show debug messages
+logging.basicConfig(level=logging.DEBUG, force=True)
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 
@@ -166,8 +170,9 @@ If the info is missing, say 'Không tìm thấy thông tin'.<|im_end|>
 {context_text}
 [CONTEXT END]
 
-QUESTION: {query}
-ANSWER:<|im_end|>"""
+QUESTION: {query}<|im_end|>
+<|im_start|>assistant
+"""
 
 
 def answer_question(query, docs, stream=False):
@@ -194,34 +199,113 @@ def answer_question(query, docs, stream=False):
         prompt = build_prompt(query, docs)
         elapsed = time.time() - t_start
         logger.debug(f"build_prompt: {elapsed:.3f}s | Prompt size: {len(prompt)} chars")
+        logger.info(f"PROMPT GENERATED:\n{'='*80}\n{prompt}\n{'='*80}")
+        print(f"[APP_DEBUG] Prompt built, size: {len(prompt)} chars", flush=True)
+        print(f"[APP_DEBUG] ===== FULL PROMPT START =====\n{prompt}\n===== FULL PROMPT END =====", flush=True)
+        sys.stderr.write(f"[STDERR_DEBUG] Prompt size: {len(prompt)} chars\n")
+        sys.stderr.flush()
     except Exception as e:
         logger.error(f"build_prompt failed: {e}")
         return f"⚠️ Error preparing response: {e}", sources
 
     try:
-        logger.info(f"🧠 Consulting the brain: {query[:60]}...")
+        logger.info(f"🧠 Consulting the brain: {query[:60]}... (stream={stream})")
+        print(f"[APP_DEBUG] answer_question: stream={stream}, query={query[:50]}", flush=True)
+        sys.stderr.write(f"[STDERR_DEBUG] Starting LLM call with stream={stream}\n")
+        sys.stderr.flush()
         
         # Measure LLM invocation
         t_start = time.time()
         if stream:
+            logger.info("Calling llm.stream()...")
+            print(f"[APP_DEBUG] Calling llm.stream()", flush=True)
+            sys.stderr.write("[STDERR_DEBUG] About to call llm.stream()\n")
+            sys.stderr.flush()
+            
             result = llm.stream(prompt)
+            print(f"[APP_DEBUG] llm.stream() returned type: {type(result)}", flush=True)
+            sys.stderr.write(f"[STDERR_DEBUG] llm.stream() returned: {type(result)}\n")
+            sys.stderr.flush()
+            
+            logger.info("Converting stream to list...")
+            print(f"[APP_DEBUG] Converting stream to list to debug...", flush=True)
+            sys.stderr.write("[STDERR_DEBUG] Converting stream to list\n")
+            sys.stderr.flush()
+            
+            chunks = []
+            chunk_count = 0
+            for chunk in result:
+                chunk_count += 1
+                chunks.append(chunk)
+                logger.debug(f"Stream chunk {chunk_count}: {repr(chunk[:60])}")
+                print(f"[APP_DEBUG] Stream yielded chunk {chunk_count}: {repr(chunk[:60] if len(chunk) > 60 else chunk)}", flush=True)
+                sys.stderr.write(f"[STDERR_DEBUG] Chunk {chunk_count}: {repr(chunk[:60] if len(chunk) > 60 else chunk)}\n")
+                sys.stderr.flush()
+            
+            full_stream = ''.join(chunks)
+            logger.info(f"Stream collection complete: {chunk_count} chunks, {len(full_stream)} chars")
+            print(f"[APP_DEBUG] Total chunks collected: {chunk_count}, content length: {len(full_stream)}", flush=True)
+            print(f"[APP_DEBUG] Full stream content: {repr(full_stream[:300])}", flush=True)
+            sys.stderr.write(f"[STDERR_DEBUG] Total chunks: {chunk_count}, content length: {len(full_stream)}\n")
+            sys.stderr.write(f"[STDERR_DEBUG] Full stream: {repr(full_stream[:300])}\n")
+            sys.stderr.flush()
+            
+            # If stream is empty or just whitespace, fallback to invoke
+            if not full_stream.strip():
+                logger.warning("Stream is empty or whitespace, falling back to llm.invoke()")
+                print(f"[APP_DEBUG] Stream is empty or whitespace, falling back to invoke()", flush=True)
+                sys.stderr.write("[STDERR_DEBUG] Stream empty, using invoke()\n")
+                sys.stderr.flush()
+                
+                result = llm.invoke(prompt).strip()
+                logger.info(f"llm.invoke() returned: {len(result)} chars")
+                print(f"[APP_DEBUG] llm.invoke() returned: {repr(result[:200])}", flush=True)
+                sys.stderr.write(f"[STDERR_DEBUG] invoke() result: {repr(result[:200])}\n")
+                sys.stderr.flush()
+                
+                # Convert to generator for consistent return type
+                def generator_wrapper():
+                    yield result
+                result = generator_wrapper()
+            else:
+                # Return the chunks as a generator
+                def chunk_generator():
+                    for chunk in chunks:
+                        yield chunk
+                result = chunk_generator()
+                
         else:
+            logger.info("Calling llm.invoke()...")
+            print(f"[APP_DEBUG] Calling llm.invoke()", flush=True)
             result = llm.invoke(prompt).strip()
+            print(f"[APP_DEBUG] llm.invoke() returned type: {type(result)}, length: {len(result)}", flush=True)
+            print(f"[APP_DEBUG] First 100 chars: {repr(result[:100])}", flush=True)
+        
         elapsed = time.time() - t_start
         # Only log length for non-stream results
         if not stream:
             logger.info(f"llm.invoke: {elapsed:.3f}s | Output: {len(result)} chars")
         else:
-            logger.info(f"llm.invoke: {elapsed:.3f}s | Output: streaming")
+            logger.info(f"llm.stream: {elapsed:.3f}s | Output: streaming")
         
         # Total time
         total = time.time() - overall_start
         logger.info(f"answer_question TOTAL: {total:.3f}s")
         
+        print(f"[APP_DEBUG] Returning: result_type={type(result)}, sources={len(sources)}", flush=True)
+        sys.stderr.write(f"[STDERR_DEBUG] Returning from answer_question: {type(result)}\n")
+        sys.stderr.flush()
         return result, sources
     
     except Exception as e:
         logger.error(f"LLM invocation failed: {e}", exc_info=True)
+        print(f"[APP_DEBUG] LLM invocation failed: {e}", flush=True)
+        sys.stderr.write(f"[STDERR_DEBUG] LLM ERROR: {e}\n")
+        sys.stderr.flush()
+        import traceback
+        print(f"[APP_DEBUG] Traceback: {traceback.format_exc()}", flush=True)
+        sys.stderr.write(f"[STDERR_DEBUG] Traceback:\n{traceback.format_exc()}\n")
+        sys.stderr.flush()
         
         # Return helpful error message
         if "CUDA" in str(e) or "memory" in str(e).lower():

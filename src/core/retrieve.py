@@ -362,12 +362,14 @@ def _perform_hybrid_search(query, db, bm25_retriever, k=60, rerank_limit=5, extr
     """
     overall_start = time.time()
     config = HybridSearchConfig()
+    print(f"[APP_DEBUG] _perform_hybrid_search called with query: {query[:50]}")
     
     try:
         all_queries = [query] + (extra_queries or [])
         doc_map = {}
         
         logger.debug(f"Searching {len(all_queries)} queries with k={k} and RRF k={config.rrf_k}...")
+        print(f"[APP_DEBUG] Searching {len(all_queries)} queries (main + {len(extra_queries or [])} extra)")
         
         # Search with all queries
         for i, q in enumerate(all_queries, 1):
@@ -376,6 +378,7 @@ def _perform_hybrid_search(query, db, bm25_retriever, k=60, rerank_limit=5, extr
                 docs, _, _, _ = search_single_query(q, db, bm25_retriever, k=k)
                 elapsed = time.time() - t_start
                 logger.debug(f"  Query {i}/{len(all_queries)}: {len(docs)} docs in {elapsed:.3f}s")
+                print(f"[APP_DEBUG] Query {i}: found {len(docs)} docs")
                 for doc in docs:
                     doc_id = get_document_id(doc)
                     existing = doc_map.get(doc_id)
@@ -387,11 +390,15 @@ def _perform_hybrid_search(query, db, bm25_retriever, k=60, rerank_limit=5, extr
                                 existing.metadata[score_key] = doc.metadata[score_key]
             except Exception as e:
                 logger.error(f"Query '{q}' failed: {e}")
+                print(f"[APP_DEBUG] Query {i} error: {e}")
                 continue
         
         unique_docs = list(doc_map.values())
+        print(f"[APP_DEBUG] Total unique docs from map: {len(unique_docs)}")
+        
         if not unique_docs:
             logger.warning(f"No documents retrieved for: {query}")
+            print(f"[APP_DEBUG] No unique docs found, returning empty")
             return [], True, 0
         
         # Deduplicate with timing
@@ -441,6 +448,7 @@ def _perform_hybrid_search(query, db, bm25_retriever, k=60, rerank_limit=5, extr
             final_docs = reranker.rerank(query, candidate_docs, top_k=rerank_limit)
             elapsed = time.time() - t_start
             logger.info(f"Reranking: {len(candidate_docs)} docs → {len(final_docs)} in {elapsed:.3f}s")
+            print(f"[APP_DEBUG] Reranked {len(candidate_docs)} → {len(final_docs)} docs")
             
             confidence_pct = 0
             low_confidence = True
@@ -452,6 +460,8 @@ def _perform_hybrid_search(query, db, bm25_retriever, k=60, rerank_limit=5, extr
                 threshold = get_low_confidence_threshold()
                 low_confidence = confidence_pct < threshold
                 
+                print(f"[APP_DEBUG] Top rerank score: {top_score:.4f} → confidence: {confidence_pct}%")
+                
                 # Log detailed confidence info for debugging
                 logger.debug(f"Top rerank score: {top_score:.4f} → Confidence: {confidence_pct}% | Threshold: {threshold}%")
                 if low_confidence:
@@ -459,11 +469,14 @@ def _perform_hybrid_search(query, db, bm25_retriever, k=60, rerank_limit=5, extr
             
             total = time.time() - overall_start
             logger.info(f"Hybrid search TOTAL: {total:.3f}s | Confidence: {confidence_pct}%")
+            print(f"[APP_DEBUG] _perform_hybrid_search returning {len(final_docs)} docs with {confidence_pct}% confidence")
             return final_docs, low_confidence, confidence_pct
         except Exception as e:
             logger.warning(f"Reranking failed: {e}, falling back to hybrid ranked results")
+            print(f"[APP_DEBUG] Reranking error: {e}")
             logger.info(f"Falling back to hybrid ranked results: {len(candidate_docs)} docs")
             fallback_docs = candidate_docs[:rerank_limit]
+            print(f"[APP_DEBUG] Returning fallback: {len(fallback_docs)} docs")
             return fallback_docs, True, 0
     
     except Exception as e:

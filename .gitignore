@@ -8,3 +8,8 @@ __pycache__/
 *.pyc
 venv/
 .env
+
+# New cleanup targets! (✧ω✧)
+*.zip
+*.db
+*.pkl

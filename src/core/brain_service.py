@@ -276,6 +276,7 @@ class Brain:
             raise ValueError("Brain is not loaded! Call brain.sync_indices() first.")
 
         overall_start = time.time()
+        print(f"[APP_DEBUG] Brain.search called with query: {query[:50]}")
         
         try:
             # Measure query rewriting
@@ -286,6 +287,7 @@ class Brain:
                 main_query = query
             elapsed = time.time() - t_start
             logger.debug(f"generate_search_queries: {elapsed:.3f}s")
+            print(f"[APP_DEBUG] Main query: {main_query}")
 
             # Use retrieval service for search
             t_start = time.time()
@@ -297,6 +299,7 @@ class Brain:
             )
             elapsed = time.time() - t_start
             logger.info(f"retrieval_service.search: {elapsed:.3f}s | {len(docs)} docs | Conf: {confidence_pct}%")
+            print(f"[APP_DEBUG] Brain.search returned {len(docs)} docs, confidence: {confidence_pct}%")
 
             total = time.time() - overall_start
             logger.info(f"Brain.search TOTAL: {total:.3f}s")
@@ -305,4 +308,5 @@ class Brain:
         
         except Exception as e:
             logger.error(f"Search failed: {e}", exc_info=True)
+            print(f"[APP_DEBUG] Brain.search error: {e}")
             raise
