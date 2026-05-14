@@ -14,7 +14,7 @@ DEFAULT_LLM_NUM_CTX = 4096
 LLM_CONTEXT_SAFETY_MARGIN = 512
 
 llm = OllamaLLM(
-    model="qwen27b",
+    model="qwen_35b_a3b_MoE",
     base_url=OLLAMA_BASE_URL,
     temperature=0.3,
     num_ctx=DEFAULT_LLM_NUM_CTX,
@@ -27,7 +27,7 @@ llm = OllamaLLM(
 # This allows RAG answer generation and query rewriting to pass explicit
 # stop boundaries without conflicting with the global default stop list.
 llm_no_stop = OllamaLLM(
-    model="qwen27b",
+    model="qwen_35b_a3b_MoE",
     base_url=OLLAMA_BASE_URL,
     temperature=0.3,
     num_ctx=DEFAULT_LLM_NUM_CTX,
@@ -201,9 +201,15 @@ Answer:"""
     return prompt
 
 
-def answer_question(query, docs, stream=False):
+def answer_question(query, docs, stream=False, confidence: float = None):
     """
     Answer a question using retrieved documents.
+
+    Args:
+        query: The user's question
+        docs: Retrieved documents
+        stream: Whether to stream the response
+        confidence: Retrieval confidence score (0-1). If very low, shows graceful fallback.
 
     Returns (result, sources) where result is:
       - a generator of string chunks when stream=True
@@ -259,9 +265,15 @@ def answer_question(query, docs, stream=False):
                 if not invoke_text:
                     logger.error("Both stream() and invoke() returned empty responses. LLM server may not be responding correctly.")
                     logger.debug(f"Prompt sent was ({len(prompt)} chars): {prompt[:100]}...")
-                    error_msg = "⚠️ The language model server did not generate a response. Please verify Ollama is running and the model is properly loaded."
+                    
+                    # If confidence is very low, show graceful fallback instead of error
+                    if confidence is not None and confidence < 0.15:  # < 15% confidence
+                        fallback_msg = "I couldn't find detailed information about that topic in the available documents. However, here are some documents that might be related to your question.\n\nPlease review the references below to see if they contain relevant information."
+                    else:
+                        fallback_msg = "⚠️ The language model server did not generate a response. Please verify Ollama is running and the model is properly loaded."
+                    
                     def error_generator():
-                        yield error_msg
+                        yield fallback_msg
                     result = error_generator()
                 else:
                     def generator_wrapper():
@@ -287,7 +299,12 @@ def answer_question(query, docs, stream=False):
                 logger.debug(f"Fallback stream returned {len(raw_chunks)} chunks, total {len(invoke_text)} chars")
                 if not invoke_text:
                     logger.error("Both invoke() and stream() returned empty responses. LLM server may not be responding correctly.")
-                    invoke_text = "⚠️ The language model server did not generate a response. Please verify Ollama is running and the model is properly loaded."
+                    
+                    # If confidence is very low, show graceful fallback instead of error
+                    if confidence is not None and confidence < 0.15:  # < 15% confidence
+                        invoke_text = "I couldn't find detailed information about that topic in the available documents. However, here are some documents that might be related to your question.\n\nPlease review the references below to see if they contain relevant information."
+                    else:
+                        invoke_text = "⚠️ The language model server did not generate a response. Please verify Ollama is running and the model is properly loaded."
 
             result = invoke_text
 

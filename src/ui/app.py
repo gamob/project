@@ -242,7 +242,8 @@ if prompt := st.chat_input("Ask me anything about the documents..."):
             response_gen, sources = answer_question(
                 prompt,
                 docs,
-                stream=True
+                stream=True,
+                confidence=confidence_pct / 100.0  # Convert percentage to decimal (0-1)
             )
             status.update(label="I've got an answer!", state="complete", expanded=False)
 

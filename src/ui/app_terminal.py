@@ -287,7 +287,12 @@ class TerminalBrain:
                     transient=True
                 ) as progress:
                     task_id = progress.add_task("Consulting the Llama...", total=None)
-                    response_gen, sources = answer_question(prompt, docs, stream=True)
+                    response_gen, sources = answer_question(
+                        prompt, 
+                        docs, 
+                        stream=True,
+                        confidence=confidence_pct / 100.0  # Convert percentage to decimal (0-1)
+                    )
                     progress.update(task_id, completed=True)
                 self._log_step(step_name, time.perf_counter() - t0)
             except Exception:

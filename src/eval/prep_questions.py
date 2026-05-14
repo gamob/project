@@ -33,7 +33,7 @@ def get_rag_llm(base_url=None):
         from langchain_ollama import OllamaLLM
         # For JSON generation, prevent reasoning blocks and premature termination
         return OllamaLLM(
-            model="qwen27b",
+            model="qwen_35b_a3b_MoE",
             base_url=url,
             temperature=0.1,
             num_ctx=2048,       # /no_think responses are short; 2k ctx is plenty
@@ -231,7 +231,7 @@ def _is_answerable(question: str, expected_answer: str, brain) -> bool:
 # "think: false" was removed — it requires Ollama ≥0.6.x and silently hangs
 # on older versions. Instead we suppress thinking via prompt + format.
 
-_OLLAMA_MODEL    = "qwen27b"
+_OLLAMA_MODEL    = "qwen_35b_a3b_MoE"
 _OLLAMA_BASE_URL = OLLAMA_BASE_URL
 
 def _check_ollama_version() -> tuple[int, int]:

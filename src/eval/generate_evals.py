@@ -118,9 +118,13 @@ def _answer_one(item):
     idx, data, brain = item
     try:
         logger.info(f"  ⏳ Starting Q{idx+1}: {data['question'][:100]}")
-        docs, _, _ = brain.search(data["question"])
+        docs, _, confidence_pct = brain.search(data["question"])
         logger.info(f"  🔎 Search returned {len(docs)} docs for Q{idx+1}")
-        rag_answer, sources = answer_question(data["question"], docs)
+        rag_answer, sources = answer_question(
+            data["question"], 
+            docs,
+            confidence=confidence_pct / 100.0  # Convert percentage to decimal (0-1)
+        )
         data["rag_answer"] = rag_answer
         
         # NEW: Evaluate faithfulness of the answer
