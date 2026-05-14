@@ -270,7 +270,7 @@ class Brain:
 
         logger.info("✅ Sync complete!")
 
-    def search(self, query: str, extra_queries=None, k: int = 60):
+    def search(self, query: str, extra_queries=None, k: int = 30):
         """Standardized interface for searching the documents."""
         if not self.vector_store or not self.bm25_retriever:
             raise ValueError("Brain is not loaded! Call brain.sync_indices() first.")
@@ -295,7 +295,7 @@ class Brain:
                 main_query,
                 extra_queries=extra_queries,
                 k=k,
-                rerank_limit=5
+                rerank_limit=3
             )
             elapsed = time.time() - t_start
             logger.info(f"retrieval_service.search: {elapsed:.3f}s | {len(docs)} docs | Conf: {confidence_pct}%")

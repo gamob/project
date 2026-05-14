@@ -437,7 +437,16 @@ def _perform_hybrid_search(query, db, bm25_retriever, k=60, rerank_limit=5, extr
         for doc, score in zip(ranked_docs, fused_scores[ranked_indices]):
             doc.metadata["hybrid_score"] = float(score)
         
-        candidate_docs = ranked_docs[: max(k, rerank_limit * 3)]
+        # Adaptive candidate pool: use fewer candidates if initial scores are high
+        # This significantly reduces reranking time
+        max_score = max(fused_scores) if len(fused_scores) > 0 else 0.0
+        if max_score > 0.8:
+            # High confidence: fewer candidates needed (top scores are good enough)
+            candidate_pool_size = min(len(ranked_docs), rerank_limit * 2)
+        else:
+            # Lower confidence: expand search more (need to find better matches)
+            candidate_pool_size = min(len(ranked_docs), rerank_limit * 4)
+        candidate_docs = ranked_docs[:candidate_pool_size]
         
         # Rerank with provided or lazy-loaded reranker
         try:

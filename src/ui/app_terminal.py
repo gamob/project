@@ -139,6 +139,12 @@ class TerminalBrain:
         else:
             self.console.print(f"[dim]{status}[/dim]")
 
+    def _log_step(self, label: str, duration: float, success: bool = True):
+        """Print a short debug summary for each processing step."""
+        status = "[green]✅" if success else "[red]✗"
+        message = f"{status} {label} — [dim]{duration:.2f}s[/dim]"
+        self.console.print(message)
+
     def show_main_menu(self):
         """Display main menu"""
         self.console.clear()
@@ -232,40 +238,61 @@ class TerminalBrain:
 
         try:
             # ── Step 1: rewrite query ────────────────────────────────────────
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=self.console,
-                transient=True
-            ) as progress:
-                task_id = progress.add_task("Refining search query...", total=None)
-                rewritten_query, query_variations = generate_search_queries(prompt)
-                progress.update(task_id, completed=True)
+            step_name = "Search query rewrite"
+            t0 = time.perf_counter()
+            try:
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=self.console,
+                    transient=True
+                ) as progress:
+                    task_id = progress.add_task("Refining search query...", total=None)
+                    rewritten_query, query_variations = generate_search_queries(prompt)
+                    progress.update(task_id, completed=True)
+                self._log_step(step_name, time.perf_counter() - t0)
+            except Exception:
+                self._log_step(step_name, time.perf_counter() - t0, success=False)
+                raise
 
             # ── Step 2: retrieve documents ───────────────────────────────────
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=self.console,
-                transient=True
-            ) as progress:
-                task_id = progress.add_task("Checking the library...", total=None)
-                docs, low_confidence, confidence_pct = self.brain.search(
-                    rewritten_query,
-                    extra_queries=query_variations
-                )
-                progress.update(task_id, completed=True)
+            step_name = "Document retrieval"
+            t0 = time.perf_counter()
+            try:
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=self.console,
+                    transient=True
+                ) as progress:
+                    task_id = progress.add_task("Checking the library...", total=None)
+                    docs, low_confidence, confidence_pct = self.brain.search(
+                        rewritten_query,
+                        extra_queries=query_variations
+                    )
+                    progress.update(task_id, completed=True)
+                self._log_step(f"{step_name} ({len(docs)} docs)", time.perf_counter() - t0)
+            except Exception:
+                self._log_step(step_name, time.perf_counter() - t0, success=False)
+                raise
 
             # ── Step 3: generate answer (spinner while LLM warms up) ─────────
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=self.console,
-                transient=True
-            ) as progress:
-                task_id = progress.add_task("Consulting the Llama...", total=None)
-                response_gen, sources = answer_question(prompt, docs, stream=True)
-                progress.update(task_id, completed=True)
+            step_name = "LLM answer generation"
+            t0 = time.perf_counter()
+            try:
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=self.console,
+                    transient=True
+                ) as progress:
+                    task_id = progress.add_task("Consulting the Llama...", total=None)
+                    response_gen, sources = answer_question(prompt, docs, stream=True)
+                    progress.update(task_id, completed=True)
+                self._log_step(step_name, time.perf_counter() - t0)
+            except Exception:
+                self._log_step(step_name, time.perf_counter() - t0, success=False)
+                raise
 
             # Collect streaming chunks into a single response string.
             if hasattr(response_gen, "__iter__") and not isinstance(response_gen, str):

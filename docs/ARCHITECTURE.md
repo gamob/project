@@ -8,36 +8,36 @@ Complete system architecture and design of the Corporate Brain RAG system.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        User Interface                            │
+│                        User Interface                           │
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │  src/ui/app.py (Streamlit Web UI)                         │ │
-│  │  src/ui/app_terminal.py (CLI Terminal UI)                 │ │
+│  │  src/ui/app.py (Streamlit Web UI)                          │ │
+│  │  src/ui/app_terminal.py (CLI Terminal UI)                  │ │
 │  └────────────────────────────────────────────────────────────┘ │
 └──────────────────┬──────────────────────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────────────────────┐
-│                    Brain Service Layer                           │
+│                    Brain Service Layer                          │
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │  src/core/brain_service.py (Orchestrator)                 │ │
-│  │  - Index lifecycle management                             │ │
-│  │  - High-level search orchestration                        │ │
-│  │  - Session management                                     │ │
+│  │  src/core/brain_service.py (Orchestrator)                  │ │
+│  │  - Index lifecycle management                              │ │
+│  │  - High-level search orchestration                         │ │
+│  │  - Session management                                      │ │
 │  └────────────────────────────────────────────────────────────┘ │
 └──────────────────┬──────────────────────────────────────────────┘
                    │
       ┌────────────┼────────────┬─────────────────┐
       │            │            │                 │
 ┌─────▼──┐  ┌─────▼──┐  ┌──────▼──┐  ┌──────────▼─┐
-│Context │  │ Hybrid │  │Generate │  │ Reranking │
-│Manager │  │ Search │  │  & LLM  │  │ & Check   │
-└────┬───┘  └────┬───┘  └───┬─────┘  └──────┬────┘
+│Context │  │ Hybrid │  │Generate │  │ Reranking  │
+│Manager │  │ Search │  │  & LLM  │  │ & Check    │
+└────┬───┘  └────┬───┘  └───┬─────┘  └──────┬─────┘
      │           │          │               │
-     │      ┌────┴────┐     │               │
+     │      ┌────┴─────┐    │               │
      │      │          │    │               │
-┌────▼─┐ ┌──▼──┐ ┌────▼─┐ ┌▼──────┐
-│Chat  │ │ VEC │ │ BM25 │ │Reranker
-│Store │ │SEARCH│ │INDEX │ │ &Check
-└──────┘ └──────┘ └──────┘ └───────┘
+┌────▼─┐ ┌──▼───┐ ┌────▼─┐ ┌▼───────┐
+│Chat  │ │ VEC  │ │ BM25 │ │Reranker│
+│Store │ │SEARCH│ │INDEX │ │ &Check │
+└──────┘ └──────┘ └──────┘ └────────┘
 
 Storage Layer: SQLite, FAISS, BM25 Index
 ```

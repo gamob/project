@@ -1,3 +1,4 @@
+import re
 import requests
 from langchain_ollama import OllamaLLM
 import os
@@ -9,15 +10,15 @@ from typing import Tuple
 logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = "http://localhost:11434"
+DEFAULT_LLM_NUM_CTX = 4096
+LLM_CONTEXT_SAFETY_MARGIN = 512
 
 llm = OllamaLLM(
     model="qwen27b",
     base_url=OLLAMA_BASE_URL,
-    temperature=0.1,
-    num_ctx=4096,
-    num_thread=64,
+    temperature=0.3,
+    num_ctx=DEFAULT_LLM_NUM_CTX,
     keep_alive=-1,
-    repeat_penalty=1.2,
     num_predict=256,
     stop=["<|im_start|>", "<|im_end|>", "<think>", "Rules:"]
 )
@@ -28,11 +29,9 @@ llm = OllamaLLM(
 llm_no_stop = OllamaLLM(
     model="qwen27b",
     base_url=OLLAMA_BASE_URL,
-    temperature=0.1,
-    num_ctx=4096,
-    num_thread=64,
+    temperature=0.3,
+    num_ctx=DEFAULT_LLM_NUM_CTX,
     keep_alive=-1,
-    repeat_penalty=1.2,
     num_predict=256,
     stop=None
 )
@@ -40,15 +39,32 @@ llm_no_stop = OllamaLLM(
 MAX_CONTEXT_CHARS = 10_000
 
 
+def _sanitize_llm_response(text: str) -> str:
+    """Remove internal reasoning blocks like <think>...</think> from model output."""
+    if not text:
+        return text
+
+    clean_text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+    if '<think>' in clean_text:
+        after_think = re.search(r'</think>\s*(.*)', text, re.DOTALL)
+        if after_think:
+            clean_text = after_think.group(1).strip()
+        else:
+            clean_text = re.sub(r'<think>.*', '', text, flags=re.DOTALL).strip()
+
+    clean_text = clean_text.replace('<think>', '').replace('</think>', '').strip()
+    return clean_text
+
+
 def calculate_optimal_context(query: str, max_chars: int = 10_000) -> int:
     """Adaptively calculate context size based on query complexity."""
     words = len(query.split())
     if words < 5:
-        return 2000
+        return 1500  # Short queries: minimal context
     elif words < 15:
-        return 6000
+        return 4000  # Medium queries: moderate context
     else:
-        return max_chars
+        return min(max_chars, 6000)  # Long queries: cap at 6K instead of 10K
 
 
 REFERENTIAL_WORDS = {
@@ -107,12 +123,20 @@ Line 2: An alternative phrasing focusing on keywords
 Line 3: Another alternative phrasing from a different angle
 
 Return ONLY the 3 lines, no labels, no explanation, no numbering.
+Do not include any reasoning tags such as <think> or </think>.
 
 Question: {query}"""
 
     try:
-        result = llm_no_stop.invoke(prompt, stop=["<|im_start|>", "<|im_end|>"]).strip()
-        lines = [l.strip() for l in result.split('\n') if l.strip()]
+        result = llm.invoke(prompt).strip()
+        result = result.replace("<think>", "").replace("</think>", "").strip()
+        lines = []
+        for l in result.splitlines():
+            text = l.strip()
+            if not text or text.lower() in {"<think>", "</think>"}:
+                continue
+            text = re.sub(r'^line\s*\d+\s*:\s*', '', text, flags=re.IGNORECASE)
+            lines.append(text)
         main = lines[0] if lines else query
         alts = tuple(lines[1:3]) if len(lines) > 1 else tuple()
         return (main, alts)
@@ -144,6 +168,7 @@ def extract_sources(docs: list) -> list:
 def _build_context_text(docs, query: str = "") -> str:
     """Build context text with adaptive sizing based on query complexity."""
     max_chars = calculate_optimal_context(query)
+    max_chars = min(max_chars, DEFAULT_LLM_NUM_CTX - LLM_CONTEXT_SAFETY_MARGIN)
     parts = []
     total = 0
     for doc in docs:
@@ -162,16 +187,15 @@ def build_prompt(query, docs):
     context_text = context_text.replace("<think>", "").replace("</think>", "")
     context_text = context_text.replace("<|im_start|>", "").replace("<|im_end|>", "")
 
-    prompt = f"""<|im_start|>system
-You are a helpful assistant that answers questions based on the provided context.
-Answer directly and clearly. If information is not in the context, say you don't have that information.<|im_end|>
-<|im_start|>user
+    prompt = f"""You are a helpful assistant that answers questions based on the provided context.
+Answer directly and clearly. If information is not in the context, say you don't have that information.
+
 Context:
 {context_text}
 
-Question: {query}<|im_end|>
-<|im_start|>assistant
-"""
+Question: {query}
+
+Answer:"""
     
     logger.debug(f"Built prompt ({len(prompt)} chars, context={len(context_text)} chars)")
     return prompt
@@ -208,11 +232,11 @@ def answer_question(query, docs, stream=False):
         if stream:
             # Collect all stream chunks up-front so we can inspect them.
             logger.debug(f"Starting stream for query: {query[:50]}...")
-            raw_chunks = list(llm_no_stop.stream(prompt, stop=["<|im_start|>", "<|im_end|>"]))
+            raw_chunks = list(llm_no_stop.stream(prompt))
             full_text = "".join(raw_chunks)
             logger.debug(f"Stream returned {len(raw_chunks)} chunks, total {len(full_text)} chars")
-
-            if not full_text.strip():
+            sanitized_text = _sanitize_llm_response(full_text)
+            if not sanitized_text.strip():
                 # -------------------------------------------------------
                 # BUG FIX: the original code did:
                 #
@@ -228,7 +252,7 @@ def answer_question(query, docs, stream=False):
                 # closure captures the correct value.
                 # -------------------------------------------------------
                 logger.warning("Stream returned empty, falling back to invoke()")
-                invoke_text = llm_no_stop.invoke(prompt, stop=["<|im_start|>", "<|im_end|>"]).strip()
+                invoke_text = _sanitize_llm_response(llm_no_stop.invoke(prompt).strip())
                 logger.debug(f"invoke() returned {len(invoke_text)} chars")
 
                 # Check if invoke also returned empty - indicates LLM/server issue
@@ -246,7 +270,7 @@ def answer_question(query, docs, stream=False):
                     result = generator_wrapper()
 
             else:
-                collected = raw_chunks        # explicit name avoids rebinding
+                collected = [sanitized_text] if sanitized_text != full_text else raw_chunks
 
                 def chunk_generator():
                     for chunk in collected:
@@ -255,11 +279,11 @@ def answer_question(query, docs, stream=False):
                 result = chunk_generator()
 
         else:
-            invoke_text = llm_no_stop.invoke(prompt, stop=["<|im_start|>", "<|im_end|>"]).strip()
+            invoke_text = _sanitize_llm_response(llm_no_stop.invoke(prompt).strip())
             if not invoke_text:
                 logger.warning("invoke() returned empty response, falling back to stream()")
-                raw_chunks = list(llm_no_stop.stream(prompt, stop=["<|im_start|>", "<|im_end|>"]))
-                invoke_text = "".join(raw_chunks).strip()
+                raw_chunks = list(llm_no_stop.stream(prompt))
+                invoke_text = _sanitize_llm_response("".join(raw_chunks).strip())
                 logger.debug(f"Fallback stream returned {len(raw_chunks)} chunks, total {len(invoke_text)} chars")
                 if not invoke_text:
                     logger.error("Both invoke() and stream() returned empty responses. LLM server may not be responding correctly.")
